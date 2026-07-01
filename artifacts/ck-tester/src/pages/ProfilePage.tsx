@@ -369,6 +369,37 @@ function VIPPage({ vipData, claims, userInfo, onBack }: { vipData: Record<string
   );
 }
 
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function camel(k: string) {
+  return k.replace(/([A-Z])/g, " $1").trim();
+}
+
+function isScalar(v: unknown): v is string | number | boolean {
+  return typeof v === "string" || typeof v === "number" || typeof v === "boolean";
+}
+
+function pick(obj: Record<string, unknown>, keys: string[]): unknown {
+  for (const k of keys) if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
+  return undefined;
+}
+
+// Generic flat-record card — shows every scalar field it finds
+function RecordFields({ item, skip = [] }: { item: Record<string, unknown>; skip?: string[] }) {
+  const entries = Object.entries(item).filter(
+    ([k, v]) => !skip.includes(k) && isScalar(v) && v !== ""
+  );
+  if (entries.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+      {entries.map(([k, v]) => (
+        <div key={k} className="text-xs text-gray-400 min-w-0">
+          {camel(k)}: <span className="text-gray-600">{String(v)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Wallet Page ───────────────────────────────────────────────────────────────
 function WalletPage({ wallets, loading, error, onBack }: { wallets: Record<string, unknown> | null; loading: boolean; error: string; onBack: () => void }) {
   return (
@@ -376,14 +407,44 @@ function WalletPage({ wallets, loading, error, onBack }: { wallets: Record<strin
       <ListState loading={loading} error={error} empty={!loading && !error && !wallets} />
       {!loading && !error && wallets && (
         <div className="space-y-2">
-          {Object.entries(wallets).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => (
-            <div key={k} className="bg-white rounded-2xl shadow-sm p-4 flex justify-between items-center">
-              <span className="text-sm text-gray-600 capitalize">{k.replace(/([A-Z])/g, " $1").trim()}</span>
-              <span className="text-sm font-bold text-gray-800">
-                {(typeof v === "number" || (typeof v === "string" && !isNaN(Number(v)))) ? `K${v}` : String(v)}
-              </span>
-            </div>
-          ))}
+          {/* Scalar top-level fields */}
+          {Object.entries(wallets)
+            .filter(([, v]) => isScalar(v) && v !== "" && v !== null && v !== undefined)
+            .map(([k, v]) => (
+              <div key={k} className="bg-white rounded-2xl shadow-sm p-4 flex justify-between items-center">
+                <span className="text-sm text-gray-600 capitalize">{camel(k)}</span>
+                <span className="text-sm font-bold text-gray-800">
+                  {typeof v === "number" || (typeof v === "string" && !isNaN(Number(v)))
+                    ? `K${v}`
+                    : String(v)}
+                </span>
+              </div>
+            ))}
+          {/* Array fields — game wallets etc. */}
+          {Object.entries(wallets)
+            .filter(([, v]) => Array.isArray(v) && (v as unknown[]).length > 0)
+            .map(([k, v]) => {
+              const items = v as Record<string, unknown>[];
+              return (
+                <div key={k} className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{camel(k)}</span>
+                  </div>
+                  {items.map((item, i) => {
+                    const name = String(pick(item, ["platName", "gameName", "name", "typeName"]) ?? `#${i + 1}`);
+                    const bal = pick(item, ["balance", "gameBalance", "platBalance", "amount", "money"]);
+                    return (
+                      <div key={i} className="px-4 py-3 flex justify-between items-center border-b border-gray-50 last:border-0">
+                        <span className="text-sm text-gray-600">{name}</span>
+                        <span className="text-sm font-bold text-gray-800">
+                          {bal !== undefined ? `K${bal}` : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
         </div>
       )}
     </SubPage>
@@ -572,7 +633,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
 
   const loadWithdraws = useCallback(() => {
     setWithdrawsLoading(true); setWithdrawsError("");
-    apiPost("WithdrawHistory", { pageIndex: 1, pageSize: 20 }, session)
+    apiPost("GetWithdrawLog", { pageIndex: 1, pageSize: 20 }, session)
       .then((d) => setWithdraws(extractList(d)))
       .catch((e) => setWithdrawsError(String(e)))
       .finally(() => setWithdrawsLoading(false));
@@ -616,22 +677,28 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
       <ListState loading={depositsLoading} error={depositsError} empty={!depositsLoading && !depositsError && deposits.length === 0} />
       {!depositsLoading && !depositsError && deposits.length > 0 && (
         <div className="space-y-3">
-          {deposits.map((item, i) => (
-            <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="text-base font-bold text-gray-900">K{String(item.amount ?? item.money ?? item.rechargeAmount ?? "—")}</div>
-                  <div className="text-xs text-gray-400 mt-0.5">{String(item.createTime ?? item.time ?? item.date ?? "—")}</div>
+          {deposits.map((item, i) => {
+            const amt = pick(item, ["rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount"]);
+            const dt = pick(item, ["createTime", "addTime", "tradeTime", "time", "date", "orderTime"]);
+            const statusStr = pick(item, ["statusText", "statusTip", "statusName", "statusStr"]);
+            const skipKeys = ["status", "rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount",
+              "createTime", "addTime", "tradeTime", "time", "date", "orderTime",
+              "statusText", "statusTip", "statusName", "statusStr"];
+            return (
+              <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <div className="text-base font-bold text-gray-900">
+                      {amt !== undefined ? `K${amt}` : "K—"}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">{dt !== undefined ? String(dt) : "—"}</div>
+                  </div>
+                  <StatusBadge status={item.status} str={statusStr as string | undefined} />
                 </div>
-                <StatusBadge status={item.status} str={item.statusStr ?? item.statusName} />
+                <RecordFields item={item} skip={skipKeys} />
               </div>
-              <div className="grid grid-cols-2 gap-1 mt-1">
-                {item.orderNo && <div className="text-xs text-gray-400">Order: <span className="text-gray-600">{String(item.orderNo)}</span></div>}
-                {item.payType && <div className="text-xs text-gray-400">Method: <span className="text-gray-600">{String(item.payType)}</span></div>}
-                {item.bonus !== undefined && item.bonus !== null && <div className="text-xs text-gray-400">Bonus: <span className="text-green-600">K{String(item.bonus)}</span></div>}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </SubPage>
@@ -642,22 +709,28 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
       <ListState loading={withdrawsLoading} error={withdrawsError} empty={!withdrawsLoading && !withdrawsError && withdraws.length === 0} />
       {!withdrawsLoading && !withdrawsError && withdraws.length > 0 && (
         <div className="space-y-3">
-          {withdraws.map((item, i) => (
-            <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
-              <div className="flex justify-between items-start mb-2">
-                <div>
-                  <div className="text-base font-bold text-gray-900">K{String(item.amount ?? item.money ?? item.withdrawAmount ?? "—")}</div>
-                  <div className="text-xs text-gray-400 mt-0.5">{String(item.createTime ?? item.time ?? item.date ?? "—")}</div>
+          {withdraws.map((item, i) => {
+            const amt = pick(item, ["withdrawAmount", "money", "amount", "withdrawMoney", "actualAmount", "orderAmount"]);
+            const dt = pick(item, ["createTime", "addTime", "tradeTime", "time", "date", "orderTime"]);
+            const statusStr = pick(item, ["statusText", "statusTip", "statusName", "statusStr"]);
+            const skipKeys = ["status", "withdrawAmount", "money", "amount", "withdrawMoney", "actualAmount", "orderAmount",
+              "createTime", "addTime", "tradeTime", "time", "date", "orderTime",
+              "statusText", "statusTip", "statusName", "statusStr"];
+            return (
+              <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <div className="text-base font-bold text-gray-900">
+                      {amt !== undefined ? `K${amt}` : "K—"}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">{dt !== undefined ? String(dt) : "—"}</div>
+                  </div>
+                  <StatusBadge status={item.status} str={statusStr as string | undefined} />
                 </div>
-                <StatusBadge status={item.status} str={item.statusStr ?? item.statusName} />
+                <RecordFields item={item} skip={skipKeys} />
               </div>
-              <div className="grid grid-cols-2 gap-1 mt-1">
-                {item.orderNo && <div className="text-xs text-gray-400">Order: <span className="text-gray-600">{String(item.orderNo)}</span></div>}
-                {item.fee !== undefined && item.fee !== null && <div className="text-xs text-gray-400">Fee: <span className="text-gray-600">K{String(item.fee)}</span></div>}
-                {item.actualAmount !== undefined && item.actualAmount !== null && <div className="text-xs text-gray-400">Actual: <span className="text-green-600">K{String(item.actualAmount)}</span></div>}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </SubPage>
@@ -678,7 +751,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
               </div>
               <div className="grid grid-cols-2 gap-1 mt-1">
                 {item.betAmount !== undefined && <div className="text-xs text-gray-400">Bet: <span className="text-gray-600">K{String(item.betAmount)}</span></div>}
-                {item.createTime && <div className="text-xs text-gray-400">{String(item.createTime)}</div>}
+                {item.createTime != null && <div className="text-xs text-gray-400">{String(item.createTime)}</div>}
               </div>
             </div>
           ))}
