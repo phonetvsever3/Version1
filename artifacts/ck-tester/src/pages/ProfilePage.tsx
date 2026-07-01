@@ -535,29 +535,25 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
       if (claims?.Amount !== undefined) setBalance(String(claims.Amount));
     });
 
-    apiPost("vipcondition", {}, session).then((d) => {
+    apiPost("GetVipUserLevelDetail", {}, session).then((d) => {
       const data = (d?.data ?? d) as Record<string, unknown>;
       if (data && typeof data === "object") setVipData(data);
     }).catch(() => {});
 
     // WinGo results
     setWingoLoading(true);
-    apiPost("WinGoGetEmerdList", { typeId: 1, language: 0 }, session)
+    apiPost("GetEmerdList", { typeId: 1 }, session)
       .then((d) => {
         const list = extractList(d);
         setWingoResults(list);
       })
-      .catch(() => {
-        apiPost("WinGoData", { typeId: 1 }, session)
-          .then((d) => setWingoResults(extractList(d)))
-          .catch(() => setWingoResults([]));
-      })
+      .catch(() => setWingoResults([]))
       .finally(() => setWingoLoading(false));
   }, []);
 
   const loadWallets = useCallback(() => {
     setWalletsLoading(true); setWalletsError("");
-    apiPost("AllwalletsBalance", {}, session)
+    apiPost("GetAllwallets", {}, session)
       .then((d) => {
         const data = (d?.data ?? d) as Record<string, unknown>;
         setWallets(data && typeof data === "object" ? data : null);
