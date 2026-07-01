@@ -2,8 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import type { UserSession } from "../App";
 import { decodeJwt } from "../utils/jwt";
 
-const CK_API = "https://ckygjf6r.com/api/webapi";
-
 interface ProfilePageProps {
   session: UserSession;
   initialUserInfo: Record<string, unknown> | null;
@@ -16,11 +14,17 @@ function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
 }
 
-async function apiPost(path: string, body: unknown, auth: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${CK_API}/${path}`, {
+async function apiPost(path: string, body: unknown, session: UserSession): Promise<Record<string, unknown>> {
+  const auth = buildAuth(session);
+  const res = await fetch(`/api/proxy/ck/${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: auth },
-    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: auth,
+      "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+    },
+    body: JSON.stringify(body ?? {}),
   });
   const text = await res.text();
   const json = JSON.parse(text) as Record<string, unknown>;
@@ -511,43 +515,40 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
   const [wingoLoading, setWingoLoading] = useState(false);
 
   const claims = initialUserInfo?._jwtClaims as Record<string, unknown> | null;
-  const auth = buildAuth(session);
 
-  // Check if token is expired
+  // Only treat as expired if JWT exp is clearly in the past AND parseable
   const tokenClaims = decodeJwt(session.token);
-  const tokenExpired = tokenClaims?.exp ? Date.now() > Number(tokenClaims.exp) * 1000 : false;
+  const tokenExpired = tokenClaims?.exp
+    ? Date.now() > Number(tokenClaims.exp) * 1000
+    : false;
 
   useEffect(() => {
-    if (!tokenExpired) {
-      apiPost("GetUserInfo", {}, auth).then((d) => {
-        const data = (d?.data ?? d) as Record<string, unknown>;
-        if (data && typeof data === "object") {
-          setUserInfo(data);
-          const bal = data.balance ?? data.amount ?? claims?.Amount ?? "0.00";
-          setBalance(String(bal));
-        }
-      }).catch(() => {
-        if (claims?.Amount !== undefined) setBalance(String(claims.Amount));
-      });
-
-      apiPost("vipcondition", {}, auth).then((d) => {
-        const data = (d?.data ?? d) as Record<string, unknown>;
-        if (data && typeof data === "object") setVipData(data);
-      }).catch(() => {});
-    } else {
+    // Always attempt API calls — the proxy will tell us if auth failed
+    apiPost("GetUserInfo", {}, session).then((d) => {
+      const data = (d?.data ?? d) as Record<string, unknown>;
+      if (data && typeof data === "object") {
+        setUserInfo(data);
+        const bal = data.balance ?? data.amount ?? claims?.Amount ?? "0.00";
+        setBalance(String(bal));
+      }
+    }).catch(() => {
       if (claims?.Amount !== undefined) setBalance(String(claims.Amount));
-    }
+    });
 
-    // WinGo results (try regardless, it might be public)
+    apiPost("vipcondition", {}, session).then((d) => {
+      const data = (d?.data ?? d) as Record<string, unknown>;
+      if (data && typeof data === "object") setVipData(data);
+    }).catch(() => {});
+
+    // WinGo results
     setWingoLoading(true);
-    apiPost("WinGoGetEmerdList", { typeId: 1, language: 0 }, auth)
+    apiPost("WinGoGetEmerdList", { typeId: 1, language: 0 }, session)
       .then((d) => {
         const list = extractList(d);
         setWingoResults(list);
       })
       .catch(() => {
-        // try alternate
-        apiPost("WinGoData", { typeId: 1 }, auth)
+        apiPost("WinGoData", { typeId: 1 }, session)
           .then((d) => setWingoResults(extractList(d)))
           .catch(() => setWingoResults([]));
       })
@@ -556,50 +557,50 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
 
   const loadWallets = useCallback(() => {
     setWalletsLoading(true); setWalletsError("");
-    apiPost("AllwalletsBalance", {}, auth)
+    apiPost("AllwalletsBalance", {}, session)
       .then((d) => {
         const data = (d?.data ?? d) as Record<string, unknown>;
         setWallets(data && typeof data === "object" ? data : null);
       })
       .catch((e) => setWalletsError(String(e)))
       .finally(() => setWalletsLoading(false));
-  }, [auth]);
+  }, [session]);
 
   const loadDeposits = useCallback(() => {
     setDepositsLoading(true); setDepositsError("");
-    apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, auth)
+    apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session)
       .then((d) => setDeposits(extractList(d)))
       .catch((e) => setDepositsError(String(e)))
       .finally(() => setDepositsLoading(false));
-  }, [auth]);
+  }, [session]);
 
   const loadWithdraws = useCallback(() => {
     setWithdrawsLoading(true); setWithdrawsError("");
-    apiPost("WithdrawHistory", { pageIndex: 1, pageSize: 20 }, auth)
+    apiPost("WithdrawHistory", { pageIndex: 1, pageSize: 20 }, session)
       .then((d) => setWithdraws(extractList(d)))
       .catch((e) => setWithdrawsError(String(e)))
       .finally(() => setWithdrawsLoading(false));
-  }, [auth]);
+  }, [session]);
 
   const loadGames = useCallback(() => {
     setGamesLoading(true); setGamesError("");
-    apiPost("BetRecords", { pageIndex: 1, pageSize: 20 }, auth)
+    apiPost("BetRecords", { pageIndex: 1, pageSize: 20 }, session)
       .then((d) => setGames(extractList(d)))
-      .catch(() => apiPost("BettingRecord", { pageIndex: 1, pageSize: 20 }, auth)
+      .catch(() => apiPost("BettingRecord", { pageIndex: 1, pageSize: 20 }, session)
         .then((d) => setGames(extractList(d)))
         .catch((e) => setGamesError(String(e))))
       .finally(() => setGamesLoading(false));
-  }, [auth]);
+  }, [session]);
 
   const loadTransactions = useCallback(() => {
     setTransactionsLoading(true); setTransactionsError("");
-    apiPost("RecordList", { pageIndex: 1, pageSize: 20 }, auth)
+    apiPost("RecordList", { pageIndex: 1, pageSize: 20 }, session)
       .then((d) => setTransactions(extractList(d)))
-      .catch(() => apiPost("AllRecords", { pageIndex: 1, pageSize: 20 }, auth)
+      .catch(() => apiPost("AllRecords", { pageIndex: 1, pageSize: 20 }, session)
         .then((d) => setTransactions(extractList(d)))
         .catch((e) => setTransactionsError(String(e))))
       .finally(() => setTransactionsLoading(false));
-  }, [auth]);
+  }, [session]);
 
   function navTo(p: Page) {
     if (p === "wallet" && !wallets && !walletsLoading) loadWallets();
