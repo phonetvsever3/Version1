@@ -8,7 +8,7 @@ interface ProfilePageProps {
   onLogout: () => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "withdraw" | "game" | "transaction";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -551,6 +551,218 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
   );
 }
 
+// ─── Deposit New Page ──────────────────────────────────────────────────────────
+type DepositMethod = { id: number | string; name: string; code?: string; logo?: string; minMoney?: number; maxMoney?: number; [key: string]: unknown };
+
+function DepositNewPage({ session, onBack }: { session: UserSession; onBack: () => void }) {
+  const [methods, setMethods] = useState<DepositMethod[]>([]);
+  const [methodsLoading, setMethodsLoading] = useState(true);
+  const [methodsError, setMethodsError] = useState("");
+  const [selected, setSelected] = useState<DepositMethod | null>(null);
+  const [amount, setAmount] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [orderResult, setOrderResult] = useState<Record<string, unknown> | null>(null);
+
+  const PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
+
+  useEffect(() => {
+    apiPost("GetRechargeTypes", {}, session)
+      .then((d) => {
+        const list = extractList(d) as DepositMethod[];
+        setMethods(list);
+        if (list.length > 0) setSelected(list[0]);
+      })
+      .catch((e) => setMethodsError(String(e)))
+      .finally(() => setMethodsLoading(false));
+  }, []);
+
+  function submit() {
+    if (!selected || !amount || Number(amount) <= 0) return;
+    setSubmitting(true); setSubmitError("");
+    const payload: Record<string, unknown> = {
+      rechargeTypeId: selected.id,
+      rechargeAmount: Number(amount),
+      money: Number(amount),
+    };
+    if (selected.code) payload.rechargeType = selected.code;
+    apiPost("CreateRechargeOrder", payload, session)
+      .then((d) => {
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        setOrderResult(data && typeof data === "object" ? data : d);
+      })
+      .catch((e) => setSubmitError(String(e)))
+      .finally(() => setSubmitting(false));
+  }
+
+  // ── Order success / payment details ──
+  function strPick(obj: Record<string, unknown>, keys: string[]): string | undefined {
+    const v = pick(obj, keys);
+    return v !== undefined ? String(v) : undefined;
+  }
+
+  if (orderResult) {
+    const payUrl = strPick(orderResult, ["payUrl", "url", "qrUrl", "payLink", "redirectUrl"]);
+    const qrCode = strPick(orderResult, ["qrCode", "qrCodeUrl", "scanCode", "qr"]);
+    const orderNo = strPick(orderResult, ["orderNum", "orderNo", "serialNo", "id", "orderId"]);
+    const bankAcc = strPick(orderResult, ["bankAccount", "accountNo", "receiveAccount", "bankNo", "cardNo"]);
+    const bankName = strPick(orderResult, ["bankName", "receiveBankName", "payBankName"]);
+    const holderName = strPick(orderResult, ["accountName", "receiveName", "holderName"]);
+    const ifsc = strPick(orderResult, ["ifscCode", "ifsc", "bankCode"]);
+    const upiId = strPick(orderResult, ["upiId", "upiAccount", "vpa"]);
+
+    return (
+      <SubPage title="📋 Payment Details" onBack={() => setOrderResult(null)}>
+        <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
+          <span className="text-2xl">✅</span>
+          <div>
+            <div className="text-green-800 font-semibold text-sm">Order Created!</div>
+            <div className="text-green-600 text-xs">Complete the payment below to top up your account.</div>
+          </div>
+        </div>
+
+        {orderNo && (
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+            <div className="text-xs text-gray-400 mb-1">Order Number</div>
+            <div className="font-mono text-sm text-gray-800 break-all">{String(orderNo)}</div>
+          </div>
+        )}
+
+        {(bankAcc || bankName || holderName || ifsc || upiId) && (
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3 space-y-3">
+            <div className="text-sm font-semibold text-gray-700">Payment Instructions</div>
+            {bankName && <InfoRow label="Bank" value={String(bankName)} />}
+            {bankAcc && <InfoRow label="Account No." value={String(bankAcc)} copyable />}
+            {holderName && <InfoRow label="Account Name" value={String(holderName)} copyable />}
+            {ifsc && <InfoRow label="IFSC / Code" value={String(ifsc)} copyable />}
+            {upiId && <InfoRow label="UPI ID" value={String(upiId)} copyable />}
+          </div>
+        )}
+
+        {qrCode && (
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3 flex flex-col items-center gap-2">
+            <div className="text-sm font-semibold text-gray-700">Scan QR Code</div>
+            <img src={String(qrCode)} alt="QR Code" className="w-48 h-48 object-contain rounded-xl border border-gray-100" />
+          </div>
+        )}
+
+        {payUrl && (
+          <a href={String(payUrl)} target="_blank" rel="noreferrer"
+            className="block w-full bg-blue-500 text-white text-center py-4 rounded-2xl font-bold text-base shadow mb-3 active:opacity-80">
+            Open Payment Page →
+          </a>
+        )}
+
+        {/* Show any other scalar fields not already displayed */}
+        <div className="bg-white rounded-2xl shadow-sm p-4">
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Full Order Details</div>
+          <RecordFields item={orderResult} skip={["payUrl","url","qrUrl","payLink","redirectUrl","qrCode","qrCodeUrl","scanCode","qr","orderNum","orderNo","serialNo","id","orderId","bankAccount","accountNo","receiveAccount","bankNo","cardNo","bankName","receiveBankName","payBankName","accountName","receiveName","holderName","ifscCode","ifsc","bankCode","upiId","upiAccount","vpa"]} />
+        </div>
+      </SubPage>
+    );
+  }
+
+  return (
+    <SubPage title="💰 Add Money" onBack={onBack}>
+      {/* Amount input */}
+      <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
+        <div className="text-sm font-semibold text-gray-700 mb-3">Enter Amount (MMK)</div>
+        <div className="relative mb-3">
+          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-lg">K</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            placeholder="0"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-full border border-gray-200 rounded-2xl pl-8 pr-4 py-4 text-2xl font-bold text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
+          />
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {PRESETS.map((p) => (
+            <button key={p} type="button"
+              onClick={() => setAmount(String(p))}
+              className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${amount === String(p) ? "bg-blue-500 text-white border-blue-500" : "bg-gray-50 text-gray-700 border-gray-200 active:bg-blue-50"}`}>
+              K{p.toLocaleString()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Payment method */}
+      <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
+        <div className="text-sm font-semibold text-gray-700 mb-3">Payment Method</div>
+        <ListState loading={methodsLoading} error={methodsError} empty={!methodsLoading && !methodsError && methods.length === 0} />
+        {!methodsLoading && methods.length > 0 && (
+          <div className="space-y-2">
+            {methods.map((m) => (
+              <button key={String(m.id)} type="button"
+                onClick={() => setSelected(m)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${selected?.id === m.id ? "border-blue-500 bg-blue-50" : "border-gray-100 bg-gray-50 active:bg-gray-100"}`}>
+                {m.logo
+                  ? <img src={m.logo} alt={m.name} className="w-8 h-8 rounded-lg object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  : <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-lg">💳</div>
+                }
+                <div className="flex-1 text-left">
+                  <div className="text-sm font-semibold text-gray-800">{m.name}</div>
+                  {(m.minMoney !== undefined || m.maxMoney !== undefined) && (
+                    <div className="text-xs text-gray-400">
+                      {m.minMoney !== undefined && `Min K${m.minMoney}`}
+                      {m.minMoney !== undefined && m.maxMoney !== undefined && " – "}
+                      {m.maxMoney !== undefined && `Max K${m.maxMoney}`}
+                    </div>
+                  )}
+                </div>
+                {selected?.id === m.id && <span className="text-blue-500 text-lg">✓</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selected && amount && Number(amount) > 0 && (
+        <div className="bg-blue-50 rounded-2xl p-4 mb-3 flex justify-between items-center">
+          <div className="text-sm text-blue-700">You're depositing</div>
+          <div className="text-blue-800 font-bold text-lg">K{Number(amount).toLocaleString()}</div>
+        </div>
+      )}
+
+      {submitError && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 mb-3 text-red-700 text-sm">{submitError}</div>
+      )}
+
+      <button
+        type="button"
+        onClick={submit}
+        disabled={submitting || !selected || !amount || Number(amount) <= 0}
+        className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
+        {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
+      </button>
+    </SubPage>
+  );
+}
+
+// Helper for payment detail rows
+function InfoRow({ label, value, copyable = false }: { label: string; value: string; copyable?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
+  }
+  return (
+    <div className="flex justify-between items-center">
+      <span className="text-xs text-gray-400">{label}</span>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-sm font-semibold text-gray-800 break-all text-right">{value}</span>
+        {copyable && (
+          <button type="button" onClick={copy} className="shrink-0 text-xs px-2 py-0.5 rounded-lg bg-gray-100 text-gray-500 active:bg-blue-100">
+            {copied ? "✓" : "Copy"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function ProfilePage({ session, initialUserInfo, onLogout }: ProfilePageProps) {
   const [page, setPage] = useState<Page>("home");
@@ -671,9 +883,23 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
+  if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} />;
 
   if (page === "deposit") return (
     <SubPage title="📥 Deposit History" onBack={() => setPage("main")}>
+      {/* Add money CTA */}
+      <button type="button" onClick={() => setPage("depositNew")}
+        className="w-full flex items-center justify-between bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-2xl px-5 py-4 mb-4 shadow active:opacity-90">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">💰</span>
+          <div className="text-left">
+            <div className="font-bold text-base">Add Money</div>
+            <div className="text-blue-100 text-xs">Deposit MMK to your account</div>
+          </div>
+        </div>
+        <span className="text-2xl">›</span>
+      </button>
+      <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 px-1">Deposit History</div>
       <ListState loading={depositsLoading} error={depositsError} empty={!depositsLoading && !depositsError && deposits.length === 0} />
       {!depositsLoading && !depositsError && deposits.length > 0 && (
         <div className="space-y-3">
