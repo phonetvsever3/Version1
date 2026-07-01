@@ -1,19 +1,20 @@
-# [Project name]
+# CKLottery Tester
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A mobile-style web app that lets you view your CKLottery (cklottery.club) account — balance, VIP status, deposit/withdrawal history, and game records.
 
 ## Run & Operate
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/ck-tester run dev` — run the frontend (port 22340)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
+- Frontend: React + Vite + Tailwind CSS (mobile-first)
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
@@ -22,15 +23,29 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/ck-tester/src/App.tsx` — root app, session state management
+- `artifacts/ck-tester/src/pages/LoginPage.tsx` — login via phone/email or pasted token
+- `artifacts/ck-tester/src/pages/ProfilePage.tsx` — full account dashboard (home, VIP, wallet, deposits, withdrawals, games, transactions)
+- `artifacts/ck-tester/src/utils/jwt.ts` — JWT decode helper
+- `artifacts/api-server/src/routes/proxy.ts` — server-side proxy to CKLottery API (bypasses CORS)
+- `lib/api-spec/openapi.yaml` — OpenAPI spec (healthz only; CKLottery calls go via proxy)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Direct CKLottery API calls from the browser are often blocked by Cloudflare. The app supports two login methods: (1) credentials (phone/email + password) and (2) pasting a token from localStorage.
+- Session is stored in `sessionStorage` (not localStorage) — clears on tab close.
+- The API server proxy (`/api/proxy/*`) forwards authenticated requests to `cklottery.club` with proper headers, bypassing CORS.
+- All CKLottery data is fetched directly from the frontend — no DB schema needed.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Login page: phone/email login or token-paste fallback
+- Home: game categories, WinGo lottery results
+- Account: profile, balance, quick-nav to all sections
+- VIP page: level, experience, benefits
+- Wallet: multi-wallet balance breakdown
+- Deposit/Withdraw: paginated history with status badges
+- Game history and transaction records
 
 ## User preferences
 
@@ -38,7 +53,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- CKLottery's API may block direct browser requests (CORS/Cloudflare). The "Paste Token" mode is the reliable fallback.
+- Token expiry is detected from JWT `exp` claim; expired tokens show a banner and disable data fetching.
 
 ## Pointers
 
