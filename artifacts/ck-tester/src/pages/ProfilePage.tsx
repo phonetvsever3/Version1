@@ -1254,20 +1254,40 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       }
     }
 
-    // All variants failed — also try CreateThirdRechargeOrder (used by external gateway methods)
-    try {
-      const d = await apiPost("CreateThirdRechargeOrder", { ...base, type: payTypeIDVal, payid: groupPayid }, session);
-      const data = (d?.data ?? d) as Record<string, unknown>;
-      setOrderResult(data && typeof data === "object" ? data : d);
-    } catch (e) {
-      const msg = String(e);
-      const kind = classifyError(msg);
-      if (kind === "duplicate") { setOrderDuplicate(true); }
-      else if (kind === "unsupported") { setChannelUnsupported(true); }
-      else { setSubmitError(`${lastErr}\n\nTried ${tried.length} payload variants + alternate endpoint.`); }
-    } finally {
-      setSubmitting(false);
+    // Cascade through all known order-creation endpoints
+    const fallbackEndpoints = [
+      "CreateThirdRechargeOrder",
+      "GetBankOrder",
+      "CreateBankOrder",
+      "MakeBankOrder",
+      "BankOrder",
+      "RechargeOrder",
+      "CreateOrder",
+      "MakeRechargeOrder",
+      "SubmitRechargeOrder",
+    ];
+
+    for (const ep of fallbackEndpoints) {
+      try {
+        const d = await apiPost(ep, { ...base, type: payTypeIDVal, payid: groupPayid }, session);
+        const msg2 = String((d?.msg ?? d?.message ?? "")).toLowerCase();
+        if (msg2.includes("url is not exist") || msg2.includes("url not exist") || msg2.includes("not exist")) continue;
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        setOrderResult(data && typeof data === "object" ? data : d);
+        setSubmitting(false);
+        return;
+      } catch (e) {
+        const msg = String(e);
+        const kind = classifyError(msg);
+        if (kind === "duplicate") { setOrderDuplicate(true); setSubmitting(false); return; }
+        if (kind === "unsupported") { setChannelUnsupported(true); setSubmitting(false); return; }
+        if (kind === "fatal") { lastErr = msg; break; }
+        // recoverable / "url not exist" → try next endpoint
+      }
     }
+
+    setSubmitError(`${lastErr}\n\nTried ${tried.length} payload variants across ${fallbackEndpoints.length + 1} endpoints.`);
+    setSubmitting(false);
   }
 
   // ── Order success / payment details ──
