@@ -787,7 +787,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [utrSuccess, setUtrSuccess] = useState(false);
   const [methodsRawDebug, setMethodsRawDebug] = useState("");
 
-  const PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
+  const DEFAULT_PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
 
   // The proxy server is Cloudflare-blocked by CKLottery — only direct browser calls work.
   async function loadMethods() {
@@ -1057,15 +1057,25 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
             className="w-full border border-gray-200 rounded-2xl pl-8 pr-4 py-4 text-2xl font-bold text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
           />
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          {PRESETS.map((p) => (
-            <button key={p} type="button"
-              onClick={() => setAmount(String(p))}
-              className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${amount === String(p) ? "bg-blue-500 text-white border-blue-500" : "bg-gray-50 text-gray-700 border-gray-200 active:bg-blue-50"}`}>
-              K{p.toLocaleString()}
-            </button>
-          ))}
-        </div>
+        {(() => {
+          const sel = selected as Record<string, unknown> | null;
+          const scopeStr = sel?.scope as string | undefined;
+          const presets: number[] = scopeStr
+            ? scopeStr.split("|").map(Number).filter((n) => Number.isFinite(n) && n > 0)
+            : DEFAULT_PRESETS;
+          const display = presets.slice(0, 6);
+          return (
+            <div className={`grid gap-2 ${display.length <= 3 ? "grid-cols-3" : display.length === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
+              {display.map((p) => (
+                <button key={p} type="button"
+                  onClick={() => setAmount(String(p))}
+                  className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${amount === String(p) ? "bg-blue-500 text-white border-blue-500" : "bg-gray-50 text-gray-700 border-gray-200 active:bg-blue-50"}`}>
+                  K{p.toLocaleString()}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Extra fields: payer name + remark */}
@@ -1113,8 +1123,8 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
           </button>
         </div>
       )}
-      {/* API debug info — always shown so we can see what the API returns */}
-      {(methodsRawDebug || (methodsError && !isAuthError(methodsError))) && (
+      {/* Debug info — only shown on error, hidden when methods load successfully */}
+      {methodsError && !isAuthError(methodsError) && (
         <div className="bg-gray-50 border border-gray-200 rounded-2xl p-3 mb-3">
           <div className="text-xs font-semibold text-gray-500 mb-1">⚙️ Debug info (share this if deposit fails)</div>
           <div className="text-xs text-gray-700 break-all font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
@@ -1157,13 +1167,19 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
                       ?? o.channelName ?? o.label ?? o.title ?? o.paySysName ?? o.id ?? "—"
                     );
                   })()}</div>
-                  {(m.minMoney !== undefined || m.maxMoney !== undefined) && (
-                    <div className="text-xs text-gray-400">
-                      {m.minMoney !== undefined && `Min K${m.minMoney}`}
-                      {m.minMoney !== undefined && m.maxMoney !== undefined && " – "}
-                      {m.maxMoney !== undefined && `Max K${m.maxMoney}`}
-                    </div>
-                  )}
+                  {(() => {
+                    const o = m as Record<string, unknown>;
+                    const minVal = o.miniPrice ?? o.minPrice ?? o.minMoney ?? o.min;
+                    const maxVal = o.maxPrice ?? o.maxMoney ?? o.max;
+                    if (minVal === undefined && maxVal === undefined) return null;
+                    return (
+                      <div className="text-xs text-gray-400">
+                        {minVal !== undefined && `Min K${Number(minVal).toLocaleString()}`}
+                        {minVal !== undefined && maxVal !== undefined && " – "}
+                        {maxVal !== undefined && `Max K${Number(maxVal).toLocaleString()}`}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {(selected as Record<string,unknown>)?._idx === (m as Record<string,unknown>)._idx && <span className="text-blue-500 text-lg">✓</span>}
               </button>
