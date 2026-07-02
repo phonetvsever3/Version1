@@ -1495,12 +1495,15 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       return parseApiJson(await res.text(), res.status);
     };
 
-    const refreshDeposits = () => {
-      setTimeout(() => {
-        setDeposits([]);
-        apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session)
-          .then(d => setDeposits(extractList(d))).catch(() => {});
-      }, 800);
+    // Optimistically flip the approved item to state 1 (Success) in local state.
+    // We don't re-fetch from the server because CKLottery may still return state 0
+    // even after a successful approve call.
+    const markApprovedLocally = () => {
+      setDeposits(prev => prev.map(d => {
+        const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
+        if (dNo !== orderNo) return d;
+        return { ...d, state: 1, status: 1, statusText: "Success", statusTip: "Success", statusStr: "Success" };
+      }));
     };
 
     const triedLabels: string[] = [];
@@ -1523,7 +1526,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
             continue;
           }
           setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
-          refreshDeposits();
+          markApprovedLocally();
           return;
         } catch (e) {
           lastErr = String(e);
