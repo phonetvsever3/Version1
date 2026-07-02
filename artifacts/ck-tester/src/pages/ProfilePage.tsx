@@ -2287,40 +2287,66 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       const targetUid = Number(addBalUserId) || uid;
       setAddBalLoading(true); setAddBalResult(null);
 
-      try {
-        const auth = buildAuth(session);
-        const res = await fetch("/api/proxy/add-balance", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: auth,
-            "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
-            ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
-          },
-          body: JSON.stringify({
-            userId: targetUid,
-            amount: amt,
-            customEndpoint: addBalCustomEp.trim() || undefined,
-          }),
-        });
-        const data = await res.json() as {
-          successes: { base: string; ep: string; code: unknown; msg: string }[];
-          others:    { base: string; ep: string; code: unknown; msg: string }[];
-        };
+      const MAX_ROUNDS = 3;
+      const auth = buildAuth(session);
+      const reqHeaders = {
+        "Content-Type": "application/json",
+        Authorization: auth,
+        "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+        ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+      };
 
-        if (data.successes.length > 0) {
-          const hit = data.successes[0];
-          setAddBalResult({ ok: true, msg: `✅ Success via [${hit.base}] ${hit.ep}!  ${hit.msg}`.trim(), base: hit.base, ep: hit.ep });
-          refreshBalance();
-        } else if (data.others.length > 0) {
-          const top = data.others[0];
-          setAddBalResult({ ok: false, msg: `Endpoint found but rejected: [${top.base}] ${top.ep} — code=${String(top.code)} ${top.msg}` });
-        } else {
-          setAddBalResult({ ok: false, msg: "No working endpoint found. CKLottery does not expose a balance-add API to regular users — requires admin panel access." });
+      for (let round = 1; round <= MAX_ROUNDS; round++) {
+        // Show live progress
+        setAddBalResult({ ok: false, msg: `⏳ Round ${round}/${MAX_ROUNDS} — probing all endpoints…` });
+
+        try {
+          const res = await fetch("/api/proxy/add-balance", {
+            method: "POST",
+            headers: reqHeaders,
+            body: JSON.stringify({
+              userId: targetUid,
+              amount: amt,
+              customEndpoint: addBalCustomEp.trim() || undefined,
+              round,
+            }),
+          });
+          const data = await res.json() as {
+            successes: { base: string; ep: string; code: unknown; msg: string }[];
+            others:    { base: string; ep: string; code: unknown; msg: string }[];
+          };
+
+          if (data.successes.length > 0) {
+            // ✅ STOP — found a working endpoint
+            const hit = data.successes[0];
+            setAddBalResult({ ok: true, msg: `✅ Success! [${hit.base}] ${hit.ep} — ${hit.msg}`.trim(), base: hit.base, ep: hit.ep });
+            refreshBalance();
+            setAddBalLoading(false);
+            return;
+          }
+
+          // Build status for this round
+          if (data.others.length > 0) {
+            const top = data.others[0];
+            setAddBalResult({ ok: false, msg: `Round ${round}/${MAX_ROUNDS}: ${data.others.length} endpoint(s) exist but rejected. Best: [${top.base}] ${top.ep} → ${top.msg.slice(0, 60)}` });
+          } else {
+            setAddBalResult({ ok: false, msg: `Round ${round}/${MAX_ROUNDS}: no responding endpoints found.` });
+          }
+        } catch (e) {
+          setAddBalResult({ ok: false, msg: `Round ${round} error: ${String(e)}` });
         }
-      } catch (e) {
-        setAddBalResult({ ok: false, msg: String(e) });
+
+        // Brief pause before next round
+        if (round < MAX_ROUNDS) await new Promise<void>(r => setTimeout(r, 600));
       }
+
+      // All rounds exhausted
+      setAddBalResult(prev => ({
+        ok: false,
+        msg: prev?.msg
+          ? `${prev.msg}\n\n❌ All ${MAX_ROUNDS} rounds exhausted — no endpoint accepted the credit. CKLottery likely requires admin-panel credentials.`
+          : `❌ All ${MAX_ROUNDS} rounds exhausted.`,
+      }));
       setAddBalLoading(false);
     }
 
