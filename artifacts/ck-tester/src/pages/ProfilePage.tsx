@@ -1670,6 +1670,10 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [vipCustomEp, setVipCustomEp] = useState("");
   const [vipUpLoading, setVipUpLoading] = useState(false);
   const [vipUpResult, setVipUpResult] = useState<{ ok: boolean; msg: string; base?: string; ep?: string } | null>(null);
+  const [vipLevelList, setVipLevelList] = useState<Record<string, unknown>[]>([]);
+  const [vipRewardsList, setVipRewardsList] = useState<Record<string, unknown>[]>([]);
+  const [vipRecords, setVipRecords] = useState<Record<string, unknown>[]>([]);
+  const [vipRealDataLoading, setVipRealDataLoading] = useState(false);
   const [vipScanRunning, setVipScanRunning] = useState(false);
   const [vipScanResults, setVipScanResults] = useState<{ base: string; ep: string; code: unknown; msg: string }[]>([]);
   const [vipScanDone, setVipScanDone] = useState(false);
@@ -3138,6 +3142,21 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   if (page === "levelUpVip") {
     const uid = Number(userInfo?.userId ?? userInfo?.id ?? userInfo?.uid ?? 0);
     const currentVipLevel = Number(userInfo?.vipLevel ?? vipData?.vipLevel ?? vipData?.level ?? 4);
+
+    useEffect(() => {
+      if (vipLevelList.length || vipRealDataLoading) return;
+      setVipRealDataLoading(true);
+      Promise.allSettled([
+        apiPost("GetListVipLevel", {}, session),
+        apiPost("GetListVipUserRewards", {}, session),
+        apiPost("GetPageListVipUserRecord", { page: 1, pageSize: 20 }, session),
+      ]).then(([levelsRes, rewardsRes, recordsRes]) => {
+        if (levelsRes.status === "fulfilled") setVipLevelList(extractList(levelsRes.value));
+        if (rewardsRes.status === "fulfilled") setVipRewardsList(extractList(rewardsRes.value));
+        if (recordsRes.status === "fulfilled") setVipRecords(extractList(recordsRes.value));
+      }).finally(() => setVipRealDataLoading(false));
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const VIP_SCAN_ENDPOINTS = [
       "UpVipLevel","UpgradeVip","VipUpgrade","ClaimVipLevel","ReceiveVipReward",
