@@ -870,11 +870,12 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
     }
     setSubmitting(true); setSubmitError("");
     const selObj = selected as Record<string, unknown>;
-    // Extract the type ID — try every known / all-lowercase field variant
+    // Extract the type ID — payTypeID is the confirmed field from the API
     let typeId = 0;
     for (const key of [
+      "payTypeID", "payTypeId", "paytypeid",
       "id", "typeId", "typeid", "type",
-      "payTypeId", "payid", "payId",
+      "payid", "payId", "payID",
       "bankId", "bankid", "bankTypeId", "banktypeid",
       "rechargeTypeId", "rechargetypeid", "rechargeid",
       "pid", "sid",
@@ -897,20 +898,14 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       return;
     }
     const sel = selected as Record<string, unknown>;
-    // groupPayid = the payment group ID used in GetRechargeTypes (stored as _payid).
-    // Theory: CreateRechargeOrder's "type" = the payment group ID (same as GetRechargeTypes payid).
-    // The method-specific ID (typeId extracted above) goes into bankId/typeId separately.
-    const groupPayid = Number(sel._payid ?? 0);
+    // payTypeID is the confirmed field for CreateRechargeOrder "type" parameter.
+    // payID / _payid is the payment group used in GetRechargeTypes.
+    const groupPayid = Number(sel._payid ?? sel.payID ?? 0);
     const payload: Record<string, unknown> = {
       amount: Number(amount),
-      type: groupPayid > 0 ? groupPayid : typeId,
+      type: typeId,           // typeId = payTypeID (e.g. 10966) — confirmed from debug
       ReturnUrl: "https://www.cklottery.club/",
     };
-    // Also send the method-specific ID under all common field names
-    if (typeId > 0 && typeId !== groupPayid) {
-      payload.typeId = typeId;
-      payload.bankId = typeId;
-    }
     if (groupPayid > 0) payload.payid = groupPayid;
     if (selected.code) payload.rechargeType = selected.code;
     if (payerName.trim()) payload.payerName = payerName.trim();
@@ -1158,8 +1153,8 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
                   <div className="text-sm font-semibold text-gray-800">{(() => {
                     const o = m as Record<string, unknown>;
                     return String(
-                      o.typeName ?? o.name ?? o.paySysName ?? o.bankName ?? o.payName
-                      ?? o.channelName ?? o.label ?? o.title ?? o.id ?? "—"
+                      o.payName ?? o.typeName ?? o.name ?? o.bankName
+                      ?? o.channelName ?? o.label ?? o.title ?? o.paySysName ?? o.id ?? "—"
                     );
                   })()}</div>
                   {(m.minMoney !== undefined || m.maxMoney !== undefined) && (
