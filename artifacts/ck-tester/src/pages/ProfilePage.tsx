@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { UserSession } from "../App";
 import { decodeJwt } from "../utils/jwt";
 import { CK_API_BASE } from "../utils/ckSign";
+import ApiCenterPage from "./ApiCenterPage";
 
 interface ProfilePageProps {
   session: UserSession;
@@ -10,7 +11,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo" | "apiCenter";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -729,6 +730,7 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           { icon: "💸", label: "Transaction", sub: "My transaction history", page: "transaction" },
           { icon: "📥", label: "Deposit", sub: "My deposit history", page: "deposit" },
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
+          { icon: "📡", label: "API Center", sub: "All 20 data sources", page: "apiCenter" },
           { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
           { icon: "🔑", label: "Token Info", sub: "All data & controls", page: "tokenInfo" },
           { icon: "✏️", label: "Edit Data", sub: "Change data on server", page: "editData" },
@@ -2524,6 +2526,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
   if (page === "wingo") return <WinGoGamePage session={session} onBack={() => setPage("home")} />;
+  if (page === "apiCenter") return <ApiCenterPage session={session} onBack={() => setPage("main")} />;
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
   if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} onLogout={onLogout} />;
