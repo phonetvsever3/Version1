@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -726,6 +726,7 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           { icon: "📥", label: "Deposit", sub: "My deposit history", page: "deposit" },
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
           { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
+          { icon: "🔑", label: "Token Info", sub: "All data & controls", page: "tokenInfo" },
         ] as const).map((h) => (
           <button key={h.page} type="button" onClick={() => onNav(h.page)} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3 text-left active:opacity-70">
             <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-xl shrink-0">{h.icon}</div>
@@ -1440,6 +1441,19 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   // Refresh balance from server each time the add-balance page is opened
   useEffect(() => {
     if (page === "addBalance") refreshBalance();
+  }, [page]);
+
+  // Token info page — fetch everything in parallel on open
+  useEffect(() => {
+    if (page !== "tokenInfo") return;
+    refreshBalance();
+    if (!vipData) {
+      apiPost("GetVipUserLevelDetail", {}, session).then((d) => {
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        if (data && typeof data === "object") setVipData(data);
+      }).catch(() => {});
+    }
+    if (!wallets && !walletsLoading) loadWallets();
   }, [page]);
 
   useEffect(() => {
@@ -2200,6 +2214,128 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       )}
     </SubPage>
   );
+
+  // ─── TOKEN INFO PAGE ──────────────────────────────────────────────────────────
+  if (page === "tokenInfo") {
+    const rawJwt   = decodeJwt(session.token) ?? {};
+    const jwtClaims = initialUserInfo?._jwtClaims as Record<string, unknown> ?? {};
+    // Merge both — rawJwt has low-level fields (exp, iat), jwtClaims has app fields
+    const allClaims: Record<string, unknown> = { ...rawJwt, ...jwtClaims };
+
+    const expTs  = Number(rawJwt.exp ?? 0) * 1000;
+    const iatTs  = Number(rawJwt.iat ?? 0) * 1000;
+    const now    = Date.now();
+    const expired = expTs > 0 && now > expTs;
+    const minsLeft = expTs > 0 ? Math.max(0, Math.round((expTs - now) / 60000)) : null;
+    const fmtDate  = (ms: number) => ms ? new Date(ms).toLocaleString() : "—";
+
+    const CONTROLS = [
+      { icon: "💳", label: "Wallet",       desc: "All wallet balances" },
+      { icon: "📥", label: "Deposit",      desc: "Create & view deposit orders" },
+      { icon: "📤", label: "Withdraw",     desc: "View withdrawal history" },
+      { icon: "💎", label: "VIP",          desc: "VIP level & benefits" },
+      { icon: "🎮", label: "Game History", desc: "Bet records with P&L" },
+      { icon: "💸", label: "Transaction",  desc: "Full transaction log" },
+      { icon: "🔄", label: "Balance",      desc: "Live server balance refresh" },
+      { icon: "➕", label: "Add Balance",  desc: "Parallel endpoint probe (3 rounds)" },
+    ];
+
+    // Helper: render a key-value table from any object
+    function KVTable({ data, label }: { data: Record<string, unknown> | null; label: string }) {
+      if (!data || Object.keys(data).length === 0)
+        return <div className="text-xs text-gray-400 italic py-1">No data yet — loading…</div>;
+      return (
+        <div className="space-y-0.5">
+          {Object.entries(data).map(([k, v]) => {
+            if (v === null || v === undefined || k === "_jwtClaims") return null;
+            const display = typeof v === "object" ? JSON.stringify(v) : String(v);
+            return (
+              <div key={k} className="flex gap-2 py-1 border-b border-gray-50 last:border-0">
+                <span className="text-xs text-gray-400 font-mono w-36 shrink-0 break-all">{k}</span>
+                <span className="text-xs text-gray-800 font-medium break-all flex-1">{display}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    return (
+      <SubPage title="🔑 Token Info" onBack={() => setPage("main")}>
+
+        {/* ── TOKEN STATUS ── */}
+        <div className={`rounded-2xl p-4 mb-3 text-white shadow ${expired ? "bg-red-500" : "bg-gradient-to-r from-green-500 to-emerald-600"}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs opacity-75 mb-0.5">Token Status</div>
+              <div className="text-lg font-bold">{expired ? "⛔ EXPIRED" : "✅ VALID"}</div>
+            </div>
+            <div className="text-right text-xs opacity-90 space-y-0.5">
+              {minsLeft !== null && !expired && (
+                <div className="font-bold text-base">{minsLeft < 60 ? `${minsLeft} min left` : `${Math.floor(minsLeft/60)}h ${minsLeft%60}m left`}</div>
+              )}
+              <div>Issued: {fmtDate(iatTs)}</div>
+              <div>Expires: {fmtDate(expTs)}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── JWT CLAIMS (raw) ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-bold text-gray-800 mb-2">📋 JWT Claims ({Object.keys(allClaims).length} fields)</div>
+          <KVTable data={allClaims} label="JWT" />
+        </div>
+
+        {/* ── SERVER ACCOUNT DATA ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-bold text-gray-800">👤 Account Data (GetUserInfo)</div>
+            <button type="button" onClick={refreshBalance} disabled={balanceLoading}
+              className="text-blue-500 text-xs font-bold disabled:opacity-40">
+              {balanceLoading ? "…" : "↻"}
+            </button>
+          </div>
+          {balanceError && <div className="text-xs text-red-400 mb-1">{balanceError}</div>}
+          <KVTable data={userInfo} label="userInfo" />
+        </div>
+
+        {/* ── VIP DATA ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-bold text-gray-800 mb-2">💎 VIP Data (GetVipUserLevelDetail)</div>
+          <KVTable data={vipData} label="vipData" />
+        </div>
+
+        {/* ── WALLETS ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-bold text-gray-800">💳 Wallets (GetAllwallets)</div>
+            <button type="button" onClick={loadWallets} disabled={walletsLoading}
+              className="text-blue-500 text-xs font-bold disabled:opacity-40">
+              {walletsLoading ? "…" : "↻"}
+            </button>
+          </div>
+          {walletsError && <div className="text-xs text-red-400 mb-1">{walletsError}</div>}
+          <KVTable data={wallets} label="wallets" />
+        </div>
+
+        {/* ── AVAILABLE CONTROLS ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-16">
+          <div className="text-sm font-bold text-gray-800 mb-3">🎛️ Available Controls ({CONTROLS.length})</div>
+          <div className="space-y-2">
+            {CONTROLS.map(c => (
+              <div key={c.label} className="flex items-center gap-3 py-1.5 border-b border-gray-50 last:border-0">
+                <span className="text-xl w-7 shrink-0">{c.icon}</span>
+                <div>
+                  <div className="text-xs font-semibold text-gray-800">{c.label}</div>
+                  <div className="text-xs text-gray-400">{c.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </SubPage>
+    );
+  }
 
   if (page === "addBalance") {
     const uid = Number(userInfo?.userId ?? userInfo?.id ?? userInfo?.uid ?? 0);
