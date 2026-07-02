@@ -102,8 +102,13 @@ function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
     if (Array.isArray(obj)) return obj as Record<string, unknown>[];
     if (obj && typeof obj === "object") {
       const o = obj as Record<string, unknown>;
-      // GetRechargeTypes uses typelist; others use list/records/items/data
-      for (const key of ["typelist", "list", "records", "items", "data", "result", "content"]) {
+      // Cast wide net over all known CKLottery key names for payment type lists
+      for (const key of [
+        "typelist", "typeList", "payTypelist", "payTypeList",
+        "rechargeTypes", "rechargeTypeList", "rechargeTypelist",
+        "payTypes", "payTypeData",
+        "list", "records", "items", "data", "result", "content",
+      ]) {
         if (Array.isArray(o[key])) return o[key] as Record<string, unknown>[];
       }
     }
@@ -762,32 +767,58 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [utrSubmitting, setUtrSubmitting] = useState(false);
   const [utrError, setUtrError] = useState("");
   const [utrSuccess, setUtrSuccess] = useState(false);
+  const [methodsRawDebug, setMethodsRawDebug] = useState("");
 
   const PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
 
-  // Always try proxy first for GetRechargeTypes — the direct call often fails with an
-  // API error (not a CORS error) and never retries via proxy, leaving us with stale fallback IDs.
+  // The proxy server is Cloudflare-blocked by CKLottery — only direct browser calls work.
   async function loadMethods() {
-    setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
+    setMethodsLoading(true); setMethodsError(""); setUsingFallback(false); setMethodsRawDebug("");
     let list: DepositMethod[] = [];
-    // Try proxy first (server-side, more reliable)
+    let rawDebug = "";
+    // Direct browser call — only path that bypasses Cloudflare
     try {
-      const d = await apiPostProxy("GetRechargeTypes", {}, session);
-      list = extractList(d) as DepositMethod[];
-    } catch {
-      // Proxy failed — try direct browser call
+      // Sign the request body via our server
+      const signRes = await fetch("/api/proxy/sign", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      const signed = await signRes.json() as Record<string, unknown>;
+      // Call CKLottery directly from the browser
+      const auth = session.tokenHeader ? `${session.tokenHeader} ${session.token}`.trim() : session.token;
+      const res = await fetch(`https://ckygjf6r.com/api/webapi/GetRechargeTypes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Authorization": auth,
+          "Origin": "https://www.cklottery.club",
+          "Referer": "https://www.cklottery.club/",
+        },
+        body: JSON.stringify(signed),
+      });
+      const text = await res.text();
+      rawDebug = text.slice(0, 500);
+      setMethodsRawDebug(rawDebug);
       try {
-        const d = await apiPostDirect("GetRechargeTypes", {}, session);
-        list = extractList(d) as DepositMethod[];
-      } catch (e2) {
-        setMethodsError(String(e2));
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        list = extractList(parsed) as DepositMethod[];
+        if (list.length === 0) {
+          // Show all keys for debugging so we can identify the right key name
+          const allKeys = JSON.stringify(Object.keys(parsed));
+          const dataKeys = parsed.data && typeof parsed.data === "object"
+            ? JSON.stringify(Object.keys(parsed.data as object)) : "";
+          setMethodsError(`API returned 0 methods. Top keys: ${allKeys}${dataKeys ? ` | data keys: ${dataKeys}` : ""} | raw: ${text.slice(0, 200)}`);
+        }
+      } catch {
+        setMethodsError(`JSON parse failed: ${text.slice(0, 300)}`);
       }
+    } catch (e) {
+      setMethodsError(String(e));
     }
     if (list.length > 0) {
       setMethods(list);
       setSelected(list[0]);
     } else {
-      // Show payment method buttons as visual hints only — block actual submission
       setMethods(FALLBACK_METHODS);
       setSelected(FALLBACK_METHODS[0]);
       setUsingFallback(true);
@@ -1026,6 +1057,13 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
             className="w-full bg-orange-500 text-white font-semibold py-2.5 rounded-xl text-sm active:opacity-80">
             Logout &amp; Refresh Token
           </button>
+        </div>
+      )}
+      {/* API debug info — shows raw error so we can diagnose why GetRechargeTypes fails */}
+      {methodsError && !isAuthError(methodsError) && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl p-3 mb-3">
+          <div className="text-xs font-semibold text-gray-500 mb-1">⚙️ Debug info (share this if deposit fails)</div>
+          <div className="text-xs text-gray-700 break-all font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">{methodsError}</div>
         </div>
       )}
 
