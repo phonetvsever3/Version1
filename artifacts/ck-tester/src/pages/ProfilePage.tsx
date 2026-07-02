@@ -1354,6 +1354,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [depositsError, setDepositsError] = useState("");
   const [approveStates, setApproveStates] = useState<Record<string, { loading: boolean; ok: boolean; err: string }>>({});
   const [approveCustomEndpoint, setApproveCustomEndpoint] = useState<Record<string, string>>({});
+  const [approveTxId, setApproveTxId] = useState<Record<string, string>>({});
   const autoApprovedRef = useRef<Set<string>>(new Set());
   const [addBalAmount, setAddBalAmount] = useState("10000");
   const [addBalUserId, setAddBalUserId] = useState("");
@@ -1432,131 +1433,108 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .finally(() => setDepositsLoading(false));
   }, [session]);
 
-  const approveDeposit = useCallback(async (item: Record<string, unknown>, customEndpoint?: string) => {
-    // Extract the order identifier (field name varies by API version)
+  // approveDeposit — primary: UpRechargesBankOrder (orderNo + transactionId)
+  // txId: payment reference from WavePay/USDT. Probed endpoint uses field "orderNo".
+  const approveDeposit = useCallback(async (
+    item: Record<string, unknown>,
+    txId?: string,
+    customEndpoint?: string,
+  ) => {
     const orderNo = String(
       item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? ""
     );
     if (!orderNo) return;
     setApproveStates(p => ({ ...p, [orderNo]: { loading: true, ok: false, err: "" } }));
 
-    // Rich payload — include every field the backend might need
-    const moneyVal = item.rechargeAmount ?? item.money ?? item.amount ?? item.rechargeMoney ?? item.actualAmount ?? 0;
-    const userIdVal = item.userId ?? item.uid ?? item.memberId ?? item.userID ?? "";
-    const payIdVal  = item.payId ?? item.payTypeId ?? item.payid ?? "";
-    const typeVal   = item.type ?? item.payTypeId ?? item.payid ?? "";
-    const groupIdVal = item.groupId ?? item.groupID ?? 0;
-    const richPayload = {
-      rechargeNumber: orderNo, rechargeSNum: orderNo, serialNo: orderNo, orderNo,
-      money: moneyVal, amount: moneyVal,
-      userId: userIdVal, uid: userIdVal, memberId: userIdVal,
-      payId: payIdVal, type: typeVal, payTypeId: typeVal, groupId: groupIdVal,
-      status: 1, state: 1, auditStatus: 1, isSuccess: 1, result: 1,
-    };
+    const moneyVal   = item.rechargeAmount ?? item.money ?? item.amount ?? item.rechargeMoney ?? item.actualAmount ?? 0;
+    const userIdVal  = item.userId ?? item.uid ?? item.memberId ?? "";
+    const payIdVal   = item.payId ?? item.payTypeId ?? item.payid ?? "";
+    const typeVal    = item.type ?? item.payTypeId ?? item.payid ?? "";
 
-    const ENDPOINTS = customEndpoint?.trim()
-      ? [customEndpoint.trim()]
-      : [
-          // primary candidates
-          "ConfirmRecharge", "ManualRechargeSuccess", "RechargeSuccess",
-          "AdminConfirmRecharge", "RechargeConfirm", "AuditRecharge",
-          "PassRecharge", "ApproveRecharge", "RechargePass", "ManualRecharge",
-          "AdminRecharge", "RechargeApprove", "ConfirmDeposit", "AdminApproveRecharge",
-          // extended scan list
-          "RechargeAudit", "RechargeCheck", "RechargeVerify", "RechargeComplete", "RechargeFinish",
-          "RechargeOk", "RechargeApproved", "PassDeposit", "AuditDeposit", "DepositApprove",
-          "RechargeAuditPass", "AuditPassRecharge", "PassAuditRecharge",
-          "ConfirmRechargeOrder", "MemberRechargeConfirm", "UserRechargeConfirm",
-          "RechargeNotify", "PaySuccessNotify", "PayCallback", "RechargeCallback",
-          "AdminManualRecharge", "SystemRecharge", "BackendRecharge", "OperatorRecharge",
-        ];
-
-    // Base paths to try (webapi first via apiPost, then admin/agent/operator via ck-path)
-    const BASES = ["webapi", "admin", "agent", "operator", "manage", "backend"];
-
-    const isNotExistErr = (m: string) =>
-      m.includes("not found") || m.includes("404") || m.includes("no such") ||
-      m.includes("url is not exist") || m.includes("url not exist") || m.includes("url does not exist") ||
-      m.includes("interface") || m.includes("method not") || m.includes("no route") ||
-      m.includes("invalid url") || m.includes("not exist") || m.includes("unknown_base");
-
-    const tryApiPathBase = async (base: string, ep: string) => {
-      const auth = buildAuth(session);
-      const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: auth,
-          "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
-          ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
-        },
-        body: JSON.stringify(richPayload),
-      });
-      return parseApiJson(await res.text(), res.status);
-    };
-
-    // Re-fetch the deposit list and check whether this order's state is now 1 on the server.
-    // Returns the updated item if confirmed, null if still pending.
+    // Re-fetch and verify server state is now 1
     const verifyServerApproved = async (): Promise<Record<string, unknown> | null> => {
       try {
         const fresh = await apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session);
-        const items = extractList(fresh);
-        const found = items.find(d => {
-          const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
-          return dNo === orderNo;
-        });
+        const found = extractList(fresh).find(d =>
+          String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "") === orderNo
+        );
         if (!found) return null;
         const newState = found.state ?? found.status;
-        const isSuccess = newState === 1 || newState === "1" ||
+        const ok = newState === 1 || newState === "1" ||
           String(found.statusText ?? found.statusStr ?? "").toLowerCase() === "success";
-        return isSuccess ? found : null;
-      } catch {
-        return null;
-      }
+        return ok ? found : null;
+      } catch { return null; }
     };
 
-    const triedLabels: string[] = [];
-    let lastErr = "";
-
-    for (const base of BASES) {
-      for (const ep of ENDPOINTS) {
-        const label = `[${base}] ${ep}`;
-        triedLabels.push(label);
-        try {
-          const result = base === "webapi"
-            ? await apiPost(ep, richPayload, session)
-            : await tryApiPathBase(base, ep);
-          // Success — CKLottery returns code 0 on success; treat any non-error response as ok
-          const code = result?.code ?? result?.status ?? result?.Code;
-          const msg  = String(result?.msg ?? result?.message ?? "").toLowerCase();
-          if (code !== 0 && code !== "0" && code !== undefined && isNotExistErr(msg)) {
-            // endpoint exists but returned a domain error — keep cascading
-            lastErr = String(result?.msg ?? result?.message ?? JSON.stringify(result));
-            continue;
-          }
-          // Verify the server state actually changed before declaring success
-          const confirmed = await verifyServerApproved();
-          if (confirmed) {
-            setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
-            // Update the deposit list with the fresh server data
-            setDeposits(prev => prev.map(d => {
-              const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
-              return dNo === orderNo ? confirmed : d;
-            }));
-            return;
-          }
-          // Code 0 but state still 0 — this endpoint is a no-op, keep trying
-          lastErr = "Endpoint accepted but state unchanged on server";
-          continue;
-        } catch (e) {
-          lastErr = String(e);
-          if (!isNotExistErr(lastErr.toLowerCase())) break; // non-404 error — stop
-        }
+    const markSuccess = async () => {
+      const confirmed = await verifyServerApproved();
+      if (confirmed) {
+        setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
+        setDeposits(prev => prev.map(d =>
+          String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "") === orderNo
+            ? confirmed : d
+        ));
+        return true;
       }
+      return false;
+    };
+
+    const isNotExistErr = (m: string) =>
+      m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+      m.includes("invalid url") || m.includes("no such") || m.includes("404") || m.includes("unknown_base");
+
+    // ── Step 1: UpRechargesBankOrder with real txId (confirmed working endpoint, field=orderNo) ──
+    const txIds = txId?.trim()
+      ? [txId.trim()]
+      : [orderNo]; // fallback: use order number itself as txId
+
+    for (const tid of txIds) {
+      try {
+        const result = await apiPost("UpRechargesBankOrder", {
+          orderNo, rechargeNumber: orderNo, serialNo: orderNo,
+          transactionId: tid, utr: tid, bankOrderNo: tid, tradeNo: tid,
+          money: moneyVal, amount: moneyVal,
+          userId: userIdVal, uid: userIdVal,
+          payId: payIdVal, type: typeVal,
+          status: 1,
+        }, session);
+        const code = result?.code ?? result?.Code;
+        const msg  = String(result?.msg ?? result?.message ?? "").toLowerCase();
+        if (code === 0 || code === "0") {
+          if (await markSuccess()) return;
+        }
+        // "already processed" or similar — verify state anyway
+        if (!isNotExistErr(msg)) {
+          if (await markSuccess()) return;
+        }
+      } catch { /* fall through */ }
     }
+
+    // ── Step 2: custom endpoint if user provided one ──
+    if (customEndpoint?.trim()) {
+      try {
+        const result = await apiPost(customEndpoint.trim(), {
+          rechargeNumber: orderNo, orderNo, serialNo: orderNo,
+          transactionId: txId?.trim() ?? orderNo,
+          money: moneyVal, userId: userIdVal, payId: payIdVal, type: typeVal, status: 1,
+        }, session);
+        const code = result?.code ?? result?.Code;
+        if (code === 0 || code === "0") {
+          if (await markSuccess()) return;
+        }
+        if (await markSuccess()) return;
+      } catch { /* fall through */ }
+    }
+
+    const needsTxId = !txId?.trim();
     setApproveStates(p => ({
       ...p,
-      [orderNo]: { loading: false, ok: false, err: `${lastErr}\n(Tried: ${triedLabels.slice(0, 8).join(", ")}…)` },
+      [orderNo]: {
+        loading: false, ok: false,
+        err: needsTxId
+          ? "Enter your WavePay/USDT transaction ID below and tap Confirm"
+          : "UpRechargesBankOrder: The order has been processed (state unchanged — CKLottery may need admin action)",
+      },
     }));
   }, [session]);
 
@@ -1677,38 +1655,50 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
                   <StatusBadge status={item.state ?? item.status} str={statusStr as string | undefined} />
                 </div>
                 <RecordFields item={item} skip={skipKeys} />
-                {/* Auto-approve status for pending orders */}
+                {/* Confirm / auto-approve status for pending orders */}
                 {isPending && (
-                  <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
                     {apv?.ok ? (
                       <div className="text-green-600 text-sm font-medium flex items-center gap-1.5">
-                        <span>✅</span> Approved successfully! Refreshing…
+                        <span>✅</span> Confirmed on server!
                       </div>
                     ) : apv?.loading ? (
                       <div className="text-blue-500 text-sm flex items-center gap-1.5">
-                        <span className="animate-spin">⏳</span> Auto-approving…
+                        <span className="animate-spin">⏳</span> Submitting…
                       </div>
-                    ) : apv?.err ? (
-                      <div className="space-y-2">
-                        <div className="text-red-500 text-xs break-all bg-red-50 rounded-lg p-2">{apv.err.split("\n")[0]}</div>
-                        <div className="flex gap-2 items-center">
+                    ) : (
+                      <>
+                        {apv?.err && (
+                          <div className="text-orange-600 text-xs bg-orange-50 rounded-lg p-2">{apv.err.split("\n")[0]}</div>
+                        )}
+                        {/* TX ID input — WavePay ref or USDT TX hash */}
+                        <div className="text-xs text-gray-500 font-medium">Payment transaction ID / TX hash</div>
+                        <div className="flex gap-2">
                           <input
                             type="text"
-                            placeholder="Custom endpoint (e.g. AdminPassRecharge)"
-                            value={approveCustomEndpoint[orderNo] ?? ""}
-                            onChange={e => setApproveCustomEndpoint(p => ({ ...p, [orderNo]: e.target.value }))}
+                            placeholder="WavePay ref or USDT TX hash"
+                            value={approveTxId[orderNo] ?? ""}
+                            onChange={e => setApproveTxId(p => ({ ...p, [orderNo]: e.target.value }))}
                             className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 bg-gray-50 focus:outline-none focus:border-blue-400"
                           />
                           <button
                             type="button"
-                            onClick={() => approveDeposit(item, approveCustomEndpoint[orderNo])}
-                            className="bg-green-500 text-white px-3 py-2 rounded-xl font-semibold text-xs active:opacity-80"
+                            onClick={() => approveDeposit(item, approveTxId[orderNo], approveCustomEndpoint[orderNo])}
+                            className="bg-blue-500 text-white px-3 py-2 rounded-xl font-semibold text-xs active:opacity-80 whitespace-nowrap"
                           >
-                            Retry
+                            Confirm
                           </button>
                         </div>
-                      </div>
-                    ) : null}
+                        {/* Advanced: custom endpoint */}
+                        <input
+                          type="text"
+                          placeholder="Custom endpoint (optional, e.g. UpRechargesBankOrder)"
+                          value={approveCustomEndpoint[orderNo] ?? ""}
+                          onChange={e => setApproveCustomEndpoint(p => ({ ...p, [orderNo]: e.target.value }))}
+                          className="w-full border border-gray-100 rounded-xl px-3 py-1.5 text-xs text-gray-500 bg-gray-50 focus:outline-none focus:border-blue-300"
+                        />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
