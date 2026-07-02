@@ -1318,6 +1318,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [deposits, setDeposits] = useState<Record<string, unknown>[]>([]);
   const [depositsLoading, setDepositsLoading] = useState(false);
   const [depositsError, setDepositsError] = useState("");
+  const [approveStates, setApproveStates] = useState<Record<string, { loading: boolean; ok: boolean; err: string }>>({});
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -1385,6 +1386,36 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .then((d) => setDeposits(extractList(d)))
       .catch((e) => setDepositsError(String(e)))
       .finally(() => setDepositsLoading(false));
+  }, [session]);
+
+  const approveDeposit = useCallback(async (item: Record<string, unknown>) => {
+    // Extract the order identifier (field name varies by API version)
+    const orderNo = String(
+      item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? ""
+    );
+    if (!orderNo) return;
+    setApproveStates(p => ({ ...p, [orderNo]: { loading: true, ok: false, err: "" } }));
+    // Try common admin-approval endpoints in order
+    const endpoints = ["ConfirmRecharge", "ManualRechargeSuccess", "RechargeSuccess", "AdminConfirmRecharge", "RechargeConfirm"];
+    let lastErr = "";
+    for (const ep of endpoints) {
+      try {
+        await apiPost(ep, { rechargeNumber: orderNo, serialNo: orderNo, orderNo }, session);
+        setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
+        // Refresh the list so the new state shows
+        setTimeout(() => {
+          setDeposits([]);
+          apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session)
+            .then(d => setDeposits(extractList(d))).catch(() => {});
+        }, 800);
+        return;
+      } catch (e) {
+        lastErr = String(e);
+        const isWrongEndpoint = lastErr.toLowerCase().includes("not found") || lastErr.toLowerCase().includes("404") || lastErr.toLowerCase().includes("no such") || lastErr.toLowerCase().includes("endpoint") || lastErr.toLowerCase().includes("method");
+        if (!isWrongEndpoint) break; // stop cascade on non-endpoint errors
+      }
+    }
+    setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: false, err: lastErr } }));
   }, [session]);
 
   const loadWithdraws = useCallback(() => {
@@ -1466,24 +1497,53 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       {!depositsLoading && !depositsError && deposits.length > 0 && (
         <div className="space-y-3">
           {deposits.map((item, i) => {
-            const amt = pick(item, ["rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount"]);
+            const amt = pick(item, ["rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount", "price"]);
             const dt = pick(item, ["createTime", "addTime", "tradeTime", "time", "date", "orderTime"]);
             const statusStr = pick(item, ["statusText", "statusTip", "statusName", "statusStr"]);
-            const skipKeys = ["status", "rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount",
+            const skipKeys = ["status", "rechargeAmount", "money", "amount", "rechargeMoney", "actualAmount", "orderAmount", "price",
               "createTime", "addTime", "tradeTime", "time", "date", "orderTime",
               "statusText", "statusTip", "statusName", "statusStr"];
+            // Pending = state/status is 0 (not yet approved)
+            const stateVal = item.state ?? item.status;
+            const isPending = stateVal === 0 || stateVal === "0";
+            const orderNo = String(item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? i);
+            const apv = approveStates[orderNo];
             return (
               <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
                 <div className="flex justify-between items-start mb-2">
                   <div>
                     <div className="text-base font-bold text-gray-900">
-                      {amt !== undefined ? `K${amt}` : "K—"}
+                      {amt !== undefined ? `K${Number(amt).toLocaleString()}` : "K—"}
                     </div>
                     <div className="text-xs text-gray-400 mt-0.5">{dt !== undefined ? String(dt) : "—"}</div>
                   </div>
-                  <StatusBadge status={item.status} str={statusStr as string | undefined} />
+                  <StatusBadge status={item.state ?? item.status} str={statusStr as string | undefined} />
                 </div>
                 <RecordFields item={item} skip={skipKeys} />
+                {/* Approve button for pending orders */}
+                {isPending && (
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    {apv?.ok ? (
+                      <div className="text-green-600 text-sm font-medium flex items-center gap-1.5">
+                        <span>✅</span> Approved successfully! Refreshing…
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={apv?.loading}
+                          onClick={() => approveDeposit(item)}
+                          className="w-full bg-green-500 disabled:bg-green-300 text-white py-2.5 rounded-xl font-semibold text-sm active:opacity-80"
+                        >
+                          {apv?.loading ? "Approving…" : "✅ Approve Deposit"}
+                        </button>
+                        {apv?.err && (
+                          <div className="text-red-500 text-xs mt-2 break-all">{apv.err}</div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
