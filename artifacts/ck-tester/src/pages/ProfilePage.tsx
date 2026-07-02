@@ -11,7 +11,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo" | "apiCenter";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo" | "apiCenter" | "luckyWheel";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -730,6 +730,7 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           { icon: "💸", label: "Transaction", sub: "My transaction history", page: "transaction" },
           { icon: "📥", label: "Deposit", sub: "My deposit history", page: "deposit" },
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
+          { icon: "🎰", label: "Lucky Wheel", sub: "Get K20,000 reward", page: "luckyWheel" },
           { icon: "📡", label: "API Center", sub: "All 20 data sources", page: "apiCenter" },
           { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
           { icon: "🔑", label: "Token Info", sub: "All data & controls", page: "tokenInfo" },
@@ -755,10 +756,10 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           <span className="text-2xl">🎁</span>
           <span className="text-[10px] text-gray-500">Activity</span>
         </button>
-        <div className="flex flex-col items-center gap-0.5">
+        <button type="button" onClick={() => onNav("luckyWheel")} className="flex flex-col items-center gap-0.5">
           <div className="w-14 h-14 -mt-5 rounded-full bg-gradient-to-t from-orange-500 to-orange-300 flex items-center justify-center text-2xl shadow-lg">🎰</div>
           <span className="text-[10px] text-orange-500 font-bold">Get K20,000</span>
-        </div>
+        </button>
         <button type="button" className="flex flex-col items-center gap-0.5">
           <span className="text-2xl">💰</span>
           <span className="text-[10px] text-gray-500">Promotion</span>
@@ -767,6 +768,243 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           <span className="text-2xl">👤</span>
           <span className="text-[10px] text-blue-500 font-bold">Account</span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Lucky Wheel Page ─────────────────────────────────────────────────────────
+function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () => void }) {
+  const [wheelInfo, setWheelInfo] = useState<Record<string, unknown> | null>(null);
+  const [infoEp, setInfoEp]       = useState<string>("");
+  const [infoLoading, setInfoLoading] = useState(true);
+  const [infoError, setInfoError] = useState("");
+
+  const [spinning, setSpinning]     = useState(false);
+  const [spinResult, setSpinResult] = useState<{ ok: boolean; msg: string; data?: Record<string, unknown> } | null>(null);
+  const [selectedBox, setSelectedBox] = useState<number | null>(null);
+
+  const INFO_ENDPOINTS = [
+    "GetInvitedWheelInfo", "GetTurnTableInfo", "GetTurntableInfo", "GetWheelInfo",
+    "GetLuckyWheelInfo", "GetTurnInfo", "TurnTableInfo", "GetTurnTableData",
+    "GetLuckyDrawInfo", "GetActivityWheelInfo", "GetSpinInfo",
+  ];
+
+  const SPIN_ENDPOINTS = [
+    "DoTurnTable", "TurnTable", "SpinWheel", "DrawWheel", "LuckyDraw",
+    "DrawTurn", "TurnTableSpin", "SpinTurnTable", "TurnWheelDraw",
+    "GetLuckyDraw", "DoLuckyDraw", "DoSpin", "Spin", "TurnWheelInfo",
+    "DrawLucky", "ActivityDraw", "WheelDraw", "DoWheel",
+  ];
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadInfo() {
+      setInfoLoading(true);
+      setInfoError("");
+      for (const ep of INFO_ENDPOINTS) {
+        try {
+          const res = await apiPost(ep, {}, session);
+          if (cancelled) return;
+          const msg = String(res.msg ?? res.message ?? "");
+          const m = msg.toLowerCase();
+          if (m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist")) continue;
+          setWheelInfo(res);
+          setInfoEp(ep);
+          setInfoLoading(false);
+          return;
+        } catch { /* try next */ }
+      }
+      if (!cancelled) {
+        setInfoError("No wheel info endpoint found — try from the CKLottery app directly.");
+        setInfoLoading(false);
+      }
+    }
+    void loadInfo();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.token]);
+
+  async function doSpin() {
+    if (spinning) return;
+    setSpinning(true);
+    setSpinResult(null);
+
+    for (const ep of SPIN_ENDPOINTS) {
+      try {
+        const body: Record<string, unknown> = {};
+        if (selectedBox !== null) body.index = selectedBox;
+        const res = await apiPost(ep, body, session);
+        const msg = String(res.msg ?? res.message ?? "");
+        const m = msg.toLowerCase();
+        if (m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist")) continue;
+        const code = res.code ?? res.Code;
+        const ok = code === 0 || code === 200 || code === "0";
+        setSpinResult({ ok, msg: ok ? `✅ ${msg || "Success!"}` : `⚠️ [${ep}] ${msg}`, data: res });
+        if (ok) {
+          // Refresh wheel info after a successful spin
+          try {
+            const fresh = await apiPost(ep === "DoTurnTable" ? "GetTurnTableInfo" : "GetInvitedWheelInfo", {}, session);
+            setWheelInfo(fresh);
+          } catch { /* ignore */ }
+        }
+        setSpinning(false);
+        return;
+      } catch (e) {
+        const msg = String(e);
+        if (msg.includes("url is not exist") || msg.includes("not exist")) continue;
+        setSpinResult({ ok: false, msg: `❌ ${msg}` });
+        setSpinning(false);
+        return;
+      }
+    }
+    setSpinResult({ ok: false, msg: "❌ No spin endpoint found on this server. The turntable API may require a different auth level." });
+    setSpinning(false);
+  }
+
+  // Extract useful fields from wheel info
+  const data = wheelInfo ? ((wheelInfo.data ?? wheelInfo) as Record<string, unknown>) : null;
+  const remainSpins = data ? Number(
+    data.remainTimes ?? data.remainCount ?? data.times ?? data.spinCount ?? data.count ?? data.num ?? 0
+  ) : 0;
+  const totalSpins  = data ? Number(data.totalTimes ?? data.total ?? data.maxTimes ?? 0) : 0;
+  const prizes: Record<string, unknown>[] = (() => {
+    if (!data) return [];
+    for (const k of ["prizeList", "rewardList", "list", "items", "gifts", "prizes", "giftList", "awardList"]) {
+      if (Array.isArray(data[k])) return data[k] as Record<string, unknown>[];
+    }
+    return [];
+  })();
+
+  const BOXES = [0, 1, 2, 3];
+
+  return (
+    <div className="min-h-screen bg-black flex flex-col">
+      {/* Header */}
+      <div className="relative flex items-center px-4 pt-12 pb-4">
+        <button type="button" onClick={onBack} className="text-white text-3xl leading-none w-8 shrink-0">‹</button>
+        <div className="flex-1 text-center">
+          <span className="text-yellow-400 font-bold text-lg" style={{ fontFamily: "serif" }}>✦ Cash everyday ✦</span>
+        </div>
+        <div className="w-8" />
+      </div>
+
+      <div className="flex-1 px-4 pb-24">
+
+        {/* Spin count banner */}
+        {!infoLoading && !infoError && (
+          <div className="flex justify-center mb-6">
+            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-6 py-3 text-center">
+              <div className="text-yellow-300 text-xs mb-1 font-medium">Remaining Spins</div>
+              <div className="text-white text-3xl font-bold">{remainSpins}</div>
+              {totalSpins > 0 && <div className="text-yellow-400/60 text-xs mt-1">of {totalSpins} total</div>}
+              {infoEp && <div className="text-yellow-400/40 text-[10px] mt-1 font-mono">{infoEp}</div>}
+            </div>
+          </div>
+        )}
+
+        {infoLoading && (
+          <div className="flex justify-center py-8">
+            <div className="text-yellow-400 text-sm animate-pulse">Loading wheel info…</div>
+          </div>
+        )}
+
+        {infoError && !infoLoading && (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-2xl p-4 mb-6 text-red-300 text-sm text-center">{infoError}</div>
+        )}
+
+        {/* Gift boxes */}
+        <div className="grid grid-cols-2 gap-6 mb-6 max-w-xs mx-auto">
+          {BOXES.map(i => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setSelectedBox(selectedBox === i ? null : i)}
+              className={`flex flex-col items-center gap-2 p-4 rounded-3xl transition-all ${
+                selectedBox === i
+                  ? "bg-yellow-400/20 border-2 border-yellow-400 scale-105"
+                  : "bg-white/5 border border-white/10 active:scale-95"
+              }`}
+            >
+              <span className="text-6xl" style={{ filter: spinning ? "grayscale(0.5)" : undefined }}>🎁</span>
+              {prizes[i] && (
+                <span className="text-yellow-300 text-xs font-bold text-center leading-tight">
+                  {String(
+                    prizes[i].prizeName ?? prizes[i].rewardName ?? prizes[i].name ??
+                    prizes[i].amount ?? prizes[i].money ?? `#${i + 1}`
+                  )}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {selectedBox !== null && (
+          <div className="text-center text-yellow-400/70 text-xs mb-4">Box #{selectedBox + 1} selected</div>
+        )}
+
+        <p className="text-white/50 text-xs text-center mb-6">Choose your reward</p>
+
+        {/* Prizes list */}
+        {prizes.length > 0 && (
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-6">
+            <div className="text-yellow-400 text-xs font-bold mb-3">Available Prizes</div>
+            <div className="space-y-2">
+              {prizes.map((p, i) => (
+                <div key={i} className="flex justify-between items-center">
+                  <span className="text-white/70 text-xs">{String(p.prizeName ?? p.rewardName ?? p.name ?? `Prize ${i + 1}`)}</span>
+                  <span className="text-yellow-300 text-xs font-bold">{String(p.amount ?? p.money ?? p.value ?? "")}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Result */}
+        {spinResult && (
+          <div className={`rounded-2xl p-4 mb-4 text-sm ${
+            spinResult.ok
+              ? "bg-green-900/40 border border-green-500/50 text-green-300"
+              : "bg-red-900/30 border border-red-600/40 text-red-300"
+          }`}>
+            <div className="font-bold mb-1">{spinResult.msg}</div>
+            {spinResult.data && (
+              <pre className="text-[10px] text-white/40 overflow-x-auto mt-2 whitespace-pre-wrap break-all max-h-32">
+                {JSON.stringify(spinResult.data, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {/* Spin button */}
+        <button
+          type="button"
+          onClick={doSpin}
+          disabled={spinning || remainSpins === 0}
+          className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all ${
+            spinning
+              ? "bg-orange-400/50 text-white/50 cursor-not-allowed"
+              : remainSpins === 0 && !infoLoading
+                ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                : "bg-gradient-to-r from-orange-500 to-yellow-400 text-white active:scale-95"
+          }`}
+        >
+          {spinning
+            ? "✨ Spinning…"
+            : remainSpins === 0 && !infoLoading
+              ? "No spins remaining"
+              : "🎰 Spin Now"}
+        </button>
+
+        {/* Raw info dump */}
+        {wheelInfo && (
+          <div className="mt-4 bg-white/5 rounded-2xl p-4">
+            <div className="text-white/30 text-xs font-bold mb-2">Raw API Response</div>
+            <pre className="text-[10px] text-green-400/60 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
+              {JSON.stringify(wheelInfo, null, 2)}
+            </pre>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2526,6 +2764,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
   if (page === "wingo") return <WinGoGamePage session={session} onBack={() => setPage("home")} />;
+  if (page === "luckyWheel") return <LuckyWheelPage session={session} onBack={() => setPage("main")} />;
   if (page === "apiCenter") return <ApiCenterPage session={session} onBack={() => setPage("main")} />;
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
