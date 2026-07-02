@@ -790,21 +790,22 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
     "GetLuckyDrawInfo", "GetActivityWheelInfo", "GetSpinInfo",
   ];
 
-  // Server confirmed valid bases: webapi, admin, agent, opera
+  // DevTools confirmed: SpinInvitedWheel under webapi, 200 OK
   const SPIN_BASES = ["webapi", "admin", "agent", "opera"];
   const SPIN_ENDPOINTS = [
-    // InvitedWheel-specific (most likely match for GetInvitedWheelInfo)
+    // ★ CONFIRMED by DevTools: webapi/SpinInvitedWheel → 200 OK
+    "SpinInvitedWheel",
+    // Other InvitedWheel variants
     "DoInvitedWheel", "InvitedWheelSpin", "TurnInvitedWheel", "DrawInvitedWheel",
-    "DoInvitedWheelSpin", "InvitedWheelDraw", "SpinInvitedWheel",
+    "DoInvitedWheelSpin", "InvitedWheelDraw",
     // Generic turntable
     "DoTurnTable", "TurnTable", "TurnTableDraw", "TurnTableSpin",
     // Wheel variants
     "SpinWheel", "DrawWheel", "WheelDraw", "DoWheel", "WheelSpin",
     // Lucky draw
-    "LuckyDraw", "DoLuckyDraw", "GetLuckyDraw", "DrawLucky", "LuckyDrawSpin",
-    // Other spin
-    "DrawTurn", "SpinTurnTable", "TurnWheelDraw", "DoSpin", "Spin",
-    "ActivityDraw", "ActivitySpin", "DrawActivity",
+    "LuckyDraw", "DoLuckyDraw", "GetLuckyDraw", "DrawLucky",
+    // Other
+    "DrawTurn", "SpinTurnTable", "DoSpin", "Spin", "ActivityDraw",
   ];
 
   useEffect(() => {
@@ -849,7 +850,40 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
       m.includes("unknown base") || m.includes("unknown_base") || m.includes("allowed: webapi") ||
       m.includes("no route") || m.includes("not found");
 
-    // Try every base × every endpoint via the ck-path proxy
+    async function tryParsed(text: string, label: string): Promise<boolean> {
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { return false; }
+      const msg = String(parsed.msg ?? parsed.message ?? "");
+      if (isDeadEnd(msg.toLowerCase())) return false;
+      const code = parsed.code ?? parsed.Code;
+      const ok = code === 0 || code === 200 || code === "0";
+      setSpinResult({ ok, msg: ok ? `✅ [${label}] ${msg || "Spin success!"}` : `⚠️ [${label}] ${msg}`, data: parsed });
+      if (ok) {
+        try { const fresh = await apiPost("GetInvitedWheelInfo", {}, session); setWheelInfo(fresh); } catch { /* ignore */ }
+      }
+      return true; // stop scanning — got a real response
+    }
+
+    // ★ Step 1: Direct browser call to SpinInvitedWheel (confirmed by DevTools — real app does this)
+    try {
+      const signRes = await fetch("/api/proxy/sign", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const signed = await signRes.json() as Record<string, unknown>;
+      const directRes = await fetch("https://ckygjf6r.com/api/webapi/SpinInvitedWheel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Authorization": auth,
+          "Origin": "https://www.cklottery.club",
+          "Referer": "https://www.cklottery.club/",
+        },
+        body: JSON.stringify(signed),
+      });
+      const text = await directRes.text();
+      if (await tryParsed(text, "direct/SpinInvitedWheel")) { setSpinning(false); return; }
+    } catch { /* CORS → fall through to proxy */ }
+
+    // Step 2: Proxy scan — try every base × every endpoint
     for (const base of SPIN_BASES) {
       for (const ep of SPIN_ENDPOINTS) {
         try {
@@ -864,29 +898,11 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
             body: JSON.stringify(body),
           });
           const text = await res.text();
-          let parsed: Record<string, unknown>;
-          try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { continue; }
-          const msg = String(parsed.msg ?? parsed.message ?? "");
-          if (isDeadEnd(msg.toLowerCase())) continue;
-          const code = parsed.code ?? parsed.Code;
-          const ok = code === 0 || code === 200 || code === "0";
-          setSpinResult({
-            ok,
-            msg: ok ? `✅ [${base}/${ep}] ${msg || "Success!"}` : `⚠️ [${base}/${ep}] ${msg}`,
-            data: parsed,
-          });
-          if (ok) {
-            try {
-              const fresh = await apiPost("GetInvitedWheelInfo", {}, session);
-              setWheelInfo(fresh);
-            } catch { /* ignore */ }
-          }
-          setSpinning(false);
-          return;
-        } catch { /* network error — try next */ }
+          if (await tryParsed(text, `${base}/${ep}`)) { setSpinning(false); return; }
+        } catch { /* try next */ }
       }
     }
-    setSpinResult({ ok: false, msg: "❌ Tried all bases (webapi/admin/agent/opera) × all spin endpoints. The spin API is not publicly accessible with this token." });
+    setSpinResult({ ok: false, msg: "❌ SpinInvitedWheel found by DevTools but blocked by CORS on direct call, and proxy returned no valid response. Try using the CKLottery app directly to spin." });
     setSpinning(false);
   }
 
