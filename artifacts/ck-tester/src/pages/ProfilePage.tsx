@@ -840,11 +840,16 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
     if (list.length === 0) {
       setMethodsError(`No payment methods found (tried payid 1–20 + known IDs). Last response: ${lastDebug.slice(0, 350)}`);
     } else {
-      setMethodsRawDebug(`✓ payid=${foundPayid} returned ${list.length} method(s)`);
+      // Show payid + raw keys of first method for debugging
+      const firstKeys = list.length > 0 ? JSON.stringify(Object.keys(list[0])) : "";
+      const firstRaw = list.length > 0 ? JSON.stringify(list[0]).slice(0, 300) : "";
+      setMethodsRawDebug(`✓ payid=${foundPayid}, ${list.length} method(s). First item keys: ${firstKeys} | raw: ${firstRaw}`);
     }
     if (list.length > 0) {
-      setMethods(list);
-      setSelected(list[0]);
+      // Assign a stable _idx so selection works even when id is undefined
+      const indexed = list.map((m, i) => ({ ...m, _idx: i }));
+      setMethods(indexed as DepositMethod[]);
+      setSelected(indexed[0] as DepositMethod);
     } else {
       setMethods(FALLBACK_METHODS);
       setSelected(FALLBACK_METHODS[0]);
@@ -864,14 +869,30 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       return;
     }
     setSubmitting(true); setSubmitError("");
-    // Extract the type ID — try every known field name, take first positive integer
+    const selObj = selected as Record<string, unknown>;
+    // Extract the type ID — try every known / all-lowercase field variant
     let typeId = 0;
-    for (const key of ["id", "typeId", "type", "payTypeId", "pid"]) {
-      const v = Number((selected as Record<string, unknown>)[key]);
+    for (const key of [
+      "id", "typeId", "typeid", "type",
+      "payTypeId", "payid", "payId",
+      "bankId", "bankid", "bankTypeId", "banktypeid",
+      "rechargeTypeId", "rechargetypeid", "rechargeid",
+      "pid", "sid",
+    ]) {
+      const v = Number(selObj[key]);
       if (Number.isFinite(v) && v > 0) { typeId = v; break; }
     }
     if (typeId <= 0) {
-      setSubmitError("Could not determine payment type ID. Tap ↻ Reload and select a method again.");
+      // Last resort: pick ANY numeric field > 0
+      for (const v of Object.values(selObj)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0 && Number.isInteger(n) && !String(v).includes(".")) {
+          typeId = n; break;
+        }
+      }
+    }
+    if (typeId <= 0) {
+      setSubmitError(`Could not determine payment type ID. Keys found: ${JSON.stringify(Object.keys(selObj))}. Tap ↻ Reload and try again.`);
       setSubmitting(false);
       return;
     }
@@ -1117,15 +1138,21 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         {!methodsLoading && methods.length > 0 && (
           <div className="space-y-2">
             {methods.map((m) => (
-              <button key={String(m.id)} type="button"
+              <button key={(m as Record<string,unknown>)._idx as number ?? String(m.id)} type="button"
                 onClick={() => setSelected(m)}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${selected?.id === m.id ? "border-blue-500 bg-blue-50" : "border-gray-100 bg-gray-50 active:bg-gray-100"}`}>
+                className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${(selected as Record<string,unknown>)?._idx === (m as Record<string,unknown>)._idx ? "border-blue-500 bg-blue-50" : "border-gray-100 bg-gray-50 active:bg-gray-100"}`}>
                 {m.logo
                   ? <img src={m.logo} alt={m.name} className="w-8 h-8 rounded-lg object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                   : <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-lg">{m.emoji ?? "💳"}</div>
                 }
                 <div className="flex-1 text-left">
-                  <div className="text-sm font-semibold text-gray-800">{String(m.typeName ?? m.name ?? m.paySysName ?? m.id)}</div>
+                  <div className="text-sm font-semibold text-gray-800">{(() => {
+                    const o = m as Record<string, unknown>;
+                    return String(
+                      o.typeName ?? o.name ?? o.paySysName ?? o.bankName ?? o.payName
+                      ?? o.channelName ?? o.label ?? o.title ?? o.id ?? "—"
+                    );
+                  })()}</div>
                   {(m.minMoney !== undefined || m.maxMoney !== undefined) && (
                     <div className="text-xs text-gray-400">
                       {m.minMoney !== undefined && `Min K${m.minMoney}`}
@@ -1134,7 +1161,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
                     </div>
                   )}
                 </div>
-                {selected?.id === m.id && <span className="text-blue-500 text-lg">✓</span>}
+                {(selected as Record<string,unknown>)?._idx === (m as Record<string,unknown>)._idx && <span className="text-blue-500 text-lg">✓</span>}
               </button>
             ))}
           </div>
