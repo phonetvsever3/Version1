@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { UserSession } from "../App";
 import { decodeJwt } from "../utils/jwt";
+import { ckSign, CK_API_BASE } from "../utils/ckSign";
 
 interface ProfilePageProps {
   session: UserSession;
@@ -15,7 +16,44 @@ function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
 }
 
-async function apiPost(path: string, body: unknown, session: UserSession): Promise<Record<string, unknown>> {
+function parseApiJson(text: string, httpStatus: number): Record<string, unknown> {
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`Non-JSON response (HTTP ${httpStatus}) — server may be blocked`);
+  }
+  if (json.error === "cloudflare_blocked") {
+    throw new Error("cloudflare_blocked");
+  }
+  if (typeof json.error === "string" && json.code === undefined) {
+    throw new Error(json.error as string);
+  }
+  if (json.code !== 0 && json.code !== 200 && json.code !== undefined) {
+    throw new Error(String(json.msg || json.message || `API error code ${json.code}`));
+  }
+  return json;
+}
+
+// Try calling CKLottery API directly from the browser (works on mobile — no Cloudflare block)
+async function apiPostDirect(path: string, body: Record<string, unknown>, session: UserSession): Promise<Record<string, unknown>> {
+  const signed = ckSign(body);
+  const tokenHeader = (session.tokenHeader || "Bearer").trim();
+  const res = await fetch(`${CK_API_BASE}/${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `${tokenHeader} ${session.token}`.trim(),
+      "token-header": tokenHeader,
+    },
+    body: JSON.stringify(signed),
+  });
+  return parseApiJson(await res.text(), res.status);
+}
+
+// Try proxy (server-side) — may be blocked by Cloudflare on some IPs
+async function apiPostProxy(path: string, body: Record<string, unknown>, session: UserSession): Promise<Record<string, unknown>> {
   const auth = buildAuth(session);
   const res = await fetch(`/api/proxy/ck/${path}`, {
     method: "POST",
@@ -28,25 +66,23 @@ async function apiPost(path: string, body: unknown, session: UserSession): Promi
     },
     body: JSON.stringify(body ?? {}),
   });
-  const text = await res.text();
-  let json: Record<string, unknown>;
+  return parseApiJson(await res.text(), res.status);
+}
+
+async function apiPost(path: string, body: unknown, session: UserSession): Promise<Record<string, unknown>> {
+  const b = (body ?? {}) as Record<string, unknown>;
+  // Try direct browser call first — mobile browsers are not blocked by Cloudflare
   try {
-    json = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    throw new Error(`Server returned non-JSON response (HTTP ${res.status})`);
+    return await apiPostDirect(path, b, session);
+  } catch (directErr) {
+    const msg = String(directErr);
+    // CORS / network errors → fall back to proxy silently
+    // Auth/API errors → re-throw immediately (proxy won't help)
+    const isCorsOrNetwork = msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed") || msg.includes("CORS") || msg.includes("fetch");
+    if (!isCorsOrNetwork) throw directErr;
   }
-  // Detect proxy-level errors (Cloudflare block, network failure)
-  if (json.error === "cloudflare_blocked") {
-    throw new Error("Proxy blocked by Cloudflare. Paste your cf_clearance cookie below to fix this, or refresh your token from cklottery.club.");
-  }
-  if (typeof json.error === "string" && json.code === undefined) {
-    throw new Error(json.error as string);
-  }
-  // API-level error codes (0 = success on most CKLottery endpoints)
-  if (json.code !== 0 && json.code !== 200 && json.code !== undefined) {
-    throw new Error(String(json.msg || json.message || `API error code ${json.code}`));
-  }
-  return json;
+  // Fallback: proxy
+  return await apiPostProxy(path, b, session);
 }
 
 function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
@@ -111,28 +147,41 @@ function StatusBadge({ status, str }: { status: unknown; str: unknown }) {
 
 // ─── Cloudflare helpers ───────────────────────────────────────────────────────
 function isCfError(err: string) {
-  return err.toLowerCase().includes("cloudflare") || err.toLowerCase().includes("proxy blocked") || err.toLowerCase().includes("cf_clearance");
+  return err === "cloudflare_blocked" || err.toLowerCase().includes("cloudflare") || err.toLowerCase().includes("proxy blocked") || err.toLowerCase().includes("cf_clearance") || err.toLowerCase().includes("server may be blocked");
 }
 
 function CloudflareFixPanel({ onFix }: { onFix: (val: string) => void }) {
   const [val, setVal] = useState("");
+  const [copied, setCopied] = useState(false);
+  const consoleCmd = `document.cookie.match(/cf_clearance=([^;]+)/)?.[1]`;
+
+  function copyCmd() {
+    navigator.clipboard.writeText(consoleCmd).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
+  }
+
   return (
-    <div className="mx-0 mt-3 bg-amber-50 border border-amber-200 rounded-2xl p-4">
+    <div className="w-full mt-3 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-left">
       <div className="flex items-start gap-2 mb-3">
         <span className="text-xl shrink-0">🛡️</span>
         <div>
-          <div className="text-amber-800 font-semibold text-sm">Cloudflare is blocking data</div>
+          <div className="text-amber-800 font-semibold text-sm">Server blocked — paste cf_clearance to fix</div>
           <div className="text-amber-700 text-xs mt-0.5 leading-relaxed">
-            Paste your <code className="bg-amber-100 px-1 rounded text-[10px]">cf_clearance</code> cookie to bypass it.
+            The proxy server is blocked by Cloudflare. Paste your browser's Cloudflare cookie to bypass it.
           </div>
         </div>
       </div>
-      <div className="bg-amber-100/60 rounded-xl p-3 mb-3 text-xs text-amber-900 leading-relaxed">
-        <strong>How to get it:</strong><br />
-        1. Open <strong>cklottery.club</strong> in your browser<br />
-        2. Press <strong>F12</strong> → Application → Cookies<br />
-        3. Find <code className="bg-white px-1 rounded">cf_clearance</code> under <em>ckygjf6r.com</em><br />
-        4. Copy the <strong>Value</strong> and paste below
+      <div className="bg-amber-100/60 rounded-xl p-3 mb-3 text-xs text-amber-900 leading-relaxed space-y-1">
+        <div className="font-bold mb-1">Step-by-step:</div>
+        <div>1. Open <strong>https://ckygjf6r.com</strong> in your browser (you'll see a security check)</div>
+        <div>2. After the check passes, open browser console / DevTools</div>
+        <div>3. Paste and run this command:</div>
+        <div className="flex items-center gap-2 mt-1">
+          <code className="bg-white border border-amber-200 rounded px-2 py-1 text-[11px] flex-1 break-all">{consoleCmd}</code>
+          <button type="button" onClick={copyCmd} className="shrink-0 bg-amber-200 text-amber-800 text-xs px-2 py-1 rounded-lg font-medium active:opacity-70">
+            {copied ? "✓" : "Copy"}
+          </button>
+        </div>
+        <div className="mt-1">4. Copy the result (a long string) and paste below</div>
       </div>
       <input
         type="text"
