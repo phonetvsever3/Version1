@@ -525,13 +525,29 @@ const WINGO_TABS = [
   { key: "wingo10", label: "WinGo 10Min", secs: 600 },
 ];
 
+function WinGoColorDots({ nStr }: { nStr: string }) {
+  const primary = nStr.slice(-1) || nStr;
+  const { isGreen, isRed, isViolet } = wingoNumberProps(primary);
+  const dots: string[] = [];
+  if (isRed) dots.push("bg-red-500");
+  if (isGreen) dots.push("bg-green-500");
+  if (isViolet) dots.push("bg-gradient-to-br from-red-500 to-violet-600");
+  return (
+    <div className="flex items-center justify-end gap-1">
+      {dots.map((c, i) => <span key={i} className={`w-2.5 h-2.5 rounded-full ${c}`} />)}
+    </div>
+  );
+}
+
 function WinGoPage({
   results,
   loading,
   loadingMore,
   error,
   hasMore,
+  page: currentPage,
   onLoadMore,
+  onPrevPage,
   onRetry,
   onCfFix,
   onBack,
@@ -541,7 +557,9 @@ function WinGoPage({
   loadingMore: boolean;
   error: string;
   hasMore: boolean;
+  page: number;
   onLoadMore: () => void;
+  onPrevPage: () => void;
   onRetry: () => void;
   onCfFix: (val: string) => void;
   onBack: () => void;
@@ -673,8 +691,9 @@ function WinGoPage({
             <>
               <div className="grid grid-cols-4 gap-1 px-4 py-2 bg-gray-50 text-[11px] font-semibold text-gray-400 uppercase">
                 <span>Period</span>
-                <span className="col-span-2">Number</span>
-                <span className="text-right">Size</span>
+                <span>Number</span>
+                <span>Big Small</span>
+                <span className="text-right">Color</span>
               </div>
               <div className="divide-y divide-gray-50">
                 {results.map((r, i) => {
@@ -684,26 +703,38 @@ function WinGoPage({
                   return (
                     <div key={i} className="px-4 py-2.5 grid grid-cols-4 gap-1 items-center">
                       <div className="text-xs text-gray-500 truncate">{String(r.period ?? r.issueNumber ?? `#${i + 1}`)}</div>
-                      <div className="col-span-2 flex items-center gap-1">
-                        {numStr.split("").map((n, j) => <WinGoBall key={j} n={n} />)}
+                      <div className="flex items-center">
+                        <WinGoBall n={primary} />
                       </div>
-                      <div className={`text-xs font-semibold text-right ${isBig ? "text-orange-500" : "text-blue-500"}`}>
+                      <div className={`text-xs font-semibold ${isBig ? "text-orange-500" : "text-blue-500"}`}>
                         {isBig ? "Big" : "Small"}
                       </div>
+                      <WinGoColorDots nStr={numStr} />
                     </div>
                   );
                 })}
               </div>
-              {hasMore && (
+              <div className="flex items-center justify-center gap-4 px-4 py-3 border-t border-gray-50">
+                <button
+                  type="button"
+                  onClick={onPrevPage}
+                  disabled={currentPage <= 1 || loading || loadingMore}
+                  className="w-9 h-9 rounded-xl bg-gray-100 text-gray-500 disabled:opacity-30 flex items-center justify-center active:opacity-70"
+                >
+                  ‹
+                </button>
+                <span className="text-xs font-semibold text-gray-500 min-w-[70px] text-center">
+                  {loadingMore ? "Loading…" : `Page ${currentPage}`}
+                </span>
                 <button
                   type="button"
                   onClick={onLoadMore}
-                  disabled={loadingMore}
-                  className="w-full py-3 text-sm font-medium text-blue-500 active:opacity-70 disabled:opacity-40"
+                  disabled={!hasMore || loading || loadingMore}
+                  className="w-9 h-9 rounded-xl bg-blue-500 text-white disabled:opacity-30 flex items-center justify-center active:opacity-70"
                 >
-                  {loadingMore ? "Loading..." : "Load More"}
+                  ›
                 </button>
-              )}
+              </div>
             </>
           )}
         </div>
@@ -1747,7 +1778,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     apiPost("GetEmerdList", { typeId: 1, pageIndex: pg, pageSize: WINGO_PAGE_SIZE }, session)
       .then((d) => {
         const list = extractList(d);
-        setWingoAll(prev => append ? [...prev, ...list] : list);
+        setWingoAll(list);
         setWingoAllHasMore(list.length >= WINGO_PAGE_SIZE);
         setWingoAllPage(pg);
       })
@@ -1756,8 +1787,12 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMoreWingoAll = useCallback(() => {
-    if (wingoAllHasMore && !wingoAllLoadingRef.current) loadWingoAll(wingoAllPage + 1, true);
+    if (wingoAllHasMore && !wingoAllLoadingRef.current) loadWingoAll(wingoAllPage + 1, false);
   }, [wingoAllHasMore, wingoAllPage, loadWingoAll]);
+
+  const loadPrevWingoAll = useCallback(() => {
+    if (wingoAllPage > 1 && !wingoAllLoadingRef.current) loadWingoAll(wingoAllPage - 1, false);
+  }, [wingoAllPage, loadWingoAll]);
 
   const loadWallets = useCallback(() => {
     setWalletsLoading(true); setWalletsError("");
@@ -2146,7 +2181,9 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       loadingMore={wingoAllLoadingMore}
       error={wingoAllError}
       hasMore={wingoAllHasMore}
+      page={wingoAllPage}
       onLoadMore={loadMoreWingoAll}
+      onPrevPage={loadPrevWingoAll}
       onRetry={() => loadWingoAll(1, false)}
       onCfFix={handleCfFix}
       onBack={() => setPage("home")}
