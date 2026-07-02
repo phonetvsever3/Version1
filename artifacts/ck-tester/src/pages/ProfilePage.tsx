@@ -1392,6 +1392,29 @@ function winColorDot(c: unknown): string {
   return "bg-gray-400";
 }
 
+// Parse a WinGo result record — handles all known CKLottery field name variants
+function parseWinGoRecord(r: Record<string, unknown>) {
+  // Number: single digit 0-9
+  const rawNum = String(
+    r.preStopNumber ?? r.number ?? r.winNumber ?? r.openCode ?? r.result ??
+    r.nums ?? r.lotteryResult ?? r.openResult ?? r.resultNum ?? ""
+  );
+  const n = isNaN(Number(rawNum.charAt(0))) ? 0 : Number(rawNum.charAt(0));
+
+  // Period
+  const period = String(
+    r.issueNumber ?? r.period ?? r.issue ?? r.no ?? r.periodNum ??
+    r.roundId ?? r.periodNumber ?? r.issueNum ?? ""
+  ) || "—";
+
+  // Color
+  const colorRaw = String(
+    r.colour ?? r.color ?? r.winColour ?? r.winColor ?? r.winColorName ?? r.colorName ?? ""
+  );
+
+  return { n, period, colorRaw };
+}
+
 function WinGoGamePage({
   session,
   onBack,
@@ -1406,6 +1429,7 @@ function WinGoGamePage({
   const [timeLeft, setTimeLeft] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAutoFetchRef = useRef(0); // throttle auto-refetch at timer=0
 
   const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [resultsLoading, setResultsLoading] = useState(true);
@@ -1426,6 +1450,11 @@ function WinGoGamePage({
 
   const totalBet = (Number(betAmt) || 0) * multiplier;
 
+  // Fallback: estimate countdown from wall clock when API doesn't return one
+  const localCountdown = useCallback(() => {
+    return activeType.duration - (Math.floor(Date.now() / 1000) % activeType.duration);
+  }, [activeType.duration]);
+
   const fetchBalance = useCallback(() => {
     apiPost("GetUserInfo", {}, session)
       .then(d => {
@@ -1436,43 +1465,54 @@ function WinGoGamePage({
       .catch(() => {});
   }, [session]);
 
+  // Stable refs so timer callbacks don't close over stale state
+  const fetchResultsRef = useRef<() => void>(() => {});
+  const fetchPeriodRef = useRef<() => Promise<void>>(async () => {});
+
+  const fetchResults = useCallback(() => {
+    setResultsLoading(true);
+    apiPost("GetEmerdList", { typeId: activeType.typeId }, session)
+      .then(d => {
+        const list = extractList(d);
+        if (list.length > 0) {
+          setResults(list);
+          const parsed = parseWinGoRecord(list[0]);
+          if (parsed.period !== "—") setPeriod(parsed.period);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setResultsLoading(false));
+  }, [session, activeType.typeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const fetchPeriod = useCallback(async () => {
     for (const ep of ["GetCurrentIssue", "GetGameInfo", "GetGameIssue", "GetCurrentPeriod"]) {
       try {
         const d = await apiPost(ep, { typeId: activeType.typeId }, session);
         const data = (d?.data ?? d) as Record<string, unknown>;
-        if (data && (data.issueNum || data.period || data.issue || data.countDown !== undefined || data.remainTime !== undefined)) {
-          const p = String(data.issueNum ?? data.period ?? data.issue ?? data.no ?? "");
-          if (p) setPeriod(p);
-          const ct = Number(data.countDown ?? data.countdown ?? data.remainTime ?? data.remainSeconds ?? data.leftTime ?? 0);
-          if (ct > 0) setTimeLeft(ct);
-          return;
-        }
+        if (!data) continue;
+        const p = String(data.issueNum ?? data.issueNumber ?? data.period ?? data.issue ?? data.no ?? "");
+        if (p) setPeriod(p);
+        const ct = Number(
+          data.countDown ?? data.countdown ?? data.remainTime ?? data.remainSeconds ??
+          data.leftTime ?? data.second ?? data.time ?? 0
+        );
+        if (ct > 0) { setTimeLeft(ct); return; }
       } catch { /* try next */ }
     }
-  }, [session, activeType.typeId]);
+    // No API returned a countdown — use local estimate
+    setTimeLeft(localCountdown());
+  }, [session, activeType.typeId, localCountdown]);
 
-  const fetchResults = useCallback(() => {
-    setResultsLoading(true);
-    apiPost("GetEmerdList", { typeId: activeType.typeId, pageNo: 1, pageSize: 30 }, session)
-      .then(d => {
-        const list = extractList(d);
-        setResults(list);
-        if (list.length > 0 && period === "—") {
-          const p = String(list[0].period ?? list[0].issueNumber ?? list[0].no ?? "");
-          if (p) setPeriod(p + " (current)");
-        }
-      })
-      .catch(() => {})
-      .finally(() => setResultsLoading(false));
-  }, [session, activeType.typeId, period]);
+  // Keep refs current
+  useEffect(() => { fetchResultsRef.current = fetchResults; }, [fetchResults]);
+  useEffect(() => { fetchPeriodRef.current = fetchPeriod; }, [fetchPeriod]);
 
   const fetchMyBets = useCallback(() => {
     setMyBetsLoading(true);
     setMyBetsError("");
     const eps = ["BetRecords", "GetBettingRecord", "GetUserBettingHistory", "MyBetList", "WingoBetRecord"];
     const tryNext = (i: number) => {
-      if (i >= eps.length) { setMyBetsLoading(false); setMyBetsError("No bet history endpoint found"); return; }
+      if (i >= eps.length) { setMyBetsLoading(false); setMyBetsError("No bet history endpoint available"); return; }
       apiPost(eps[i], { typeId: activeType.typeId, pageIndex: 1, pageSize: 20 }, session)
         .then(d => { setMyBets(extractList(d)); setMyBetsLoading(false); })
         .catch(() => tryNext(i + 1));
@@ -1480,33 +1520,47 @@ function WinGoGamePage({
     tryNext(0);
   }, [session, activeType.typeId]);
 
+  // Single stable timer — NEVER triggers refetch when already at 0
   const startTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t <= 1) {
-          setTimeout(() => { fetchResults(); fetchPeriod(); }, 500);
-          return 0;
+      setTimeLeft(prev => {
+        if (prev <= 0) return 0; // already zero, do nothing
+        const next = prev - 1;
+        if (next === 0) {
+          // Trigger ONE refetch, throttled to prevent double-fires
+          const now = Date.now();
+          if (now - lastAutoFetchRef.current > 3000) {
+            lastAutoFetchRef.current = now;
+            setTimeout(() => {
+              fetchResultsRef.current();
+              fetchPeriodRef.current();
+            }, 600);
+          }
         }
-        return t - 1;
+        return next;
       });
     }, 1000);
-  }, [fetchResults, fetchPeriod]);
+  }, []);
 
   useEffect(() => {
     setResults([]);
     setMyBets([]);
     setPeriod("—");
-    setTimeLeft(0);
+    setTimeLeft(localCountdown()); // Start with local estimate immediately
     setResultsLoading(true);
     setBetMsg(null);
+    lastAutoFetchRef.current = 0;
 
-    fetchPeriod().then(() => startTimer());
     fetchResults();
-    fetchBalance();
+    fetchPeriod(); // will update timeLeft from API if available
 
     if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => { fetchPeriod(); }, 5000);
+    pollRef.current = setInterval(() => { fetchPeriodRef.current(); }, 6000);
+
+    startTimer();
+
+    fetchBalance();
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -1598,7 +1652,7 @@ function WinGoGamePage({
           <span className="text-[10px] text-gray-400 shrink-0">Win Go {activeType.short}</span>
           <div className="flex gap-1">
             {lastFive.map((r, i) => {
-              const n = Number(String(r.number ?? r.result ?? "0").charAt(0));
+              const { n } = parseWinGoRecord(r);
               return (
                 <div key={i} className={`w-6 h-6 rounded-full ${getNumBallClass(n)} flex items-center justify-center text-white text-[10px] font-bold shadow-sm`}>
                   {n}
@@ -1732,10 +1786,8 @@ function WinGoGamePage({
             ) : (
               <div className="divide-y divide-gray-50">
                 {results.slice(0, 20).map((r, i) => {
-                  const n = Number(String(r.number ?? r.result ?? "0").charAt(0));
+                  const { n, period: p, colorRaw: winColorRaw } = parseWinGoRecord(r);
                   const big = numIsBig(n);
-                  const p = String(r.period ?? r.issueNumber ?? r.no ?? "—");
-                  const winColorRaw = String(r.color ?? r.winColor ?? r.winColorName ?? "");
                   const colors = winColorRaw
                     ? winColorRaw.split(/[,&+|]/).map(s => s.trim()).filter(Boolean)
                     : [n === 0 ? "Red" : n === 5 ? "Green" : n % 2 === 0 ? "Red" : "Green"];
@@ -1787,14 +1839,14 @@ function WinGoGamePage({
                       <td className="text-[10px] text-gray-500 text-left pr-1 py-0.5">Missing</td>
                       {[0,1,2,3,4,5,6,7,8,9].map(n => {
                         let m = 0;
-                        for (const r of results) { if (Number(String(r.number ?? r.result ?? "").charAt(0)) === n) break; m++; }
+                        for (const r of results) { if (parseWinGoRecord(r).n === n) break; m++; }
                         return <td key={n} className="text-[10px] text-gray-700 py-0.5">{m}</td>;
                       })}
                     </tr>
                     <tr>
                       <td className="text-[10px] text-gray-500 text-left pr-1 py-0.5">Frequency</td>
                       {[0,1,2,3,4,5,6,7,8,9].map(n => {
-                        const f = results.filter(r => Number(String(r.number ?? r.result ?? "").charAt(0)) === n).length;
+                        const f = results.filter(r => parseWinGoRecord(r).n === n).length;
                         return <td key={n} className="text-[10px] text-gray-700 py-0.5">{f}</td>;
                       })}
                     </tr>
@@ -1805,9 +1857,8 @@ function WinGoGamePage({
             {/* Period rows */}
             <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
               {results.slice(0, 30).map((r, i) => {
-                const winNum = Number(String(r.number ?? r.result ?? "0").charAt(0));
+                const { n: winNum, period: p } = parseWinGoRecord(r);
                 const big = numIsBig(winNum);
-                const p = String(r.period ?? r.issueNumber ?? r.no ?? "—");
                 return (
                   <div key={i} className="flex items-center gap-1 py-1">
                     <span className="text-[9px] text-gray-400 font-mono w-[88px] shrink-0 truncate">{p}</span>
