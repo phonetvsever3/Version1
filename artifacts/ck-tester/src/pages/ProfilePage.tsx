@@ -552,12 +552,25 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
 }
 
 // ─── Deposit New Page ──────────────────────────────────────────────────────────
-type DepositMethod = { id: number | string; name: string; code?: string; logo?: string; minMoney?: number; maxMoney?: number; [key: string]: unknown };
+type DepositMethod = { id: number | string; name: string; code?: string; logo?: string; emoji?: string; minMoney?: number; maxMoney?: number; [key: string]: unknown };
 
-function DepositNewPage({ session, onBack }: { session: UserSession; onBack: () => void }) {
+const FALLBACK_METHODS: DepositMethod[] = [
+  { id: 1, name: "KBZ Pay", emoji: "🏦" },
+  { id: 2, name: "Wave Pay", emoji: "🌊" },
+  { id: 3, name: "AYA Pay", emoji: "💳" },
+  { id: 4, name: "CB Pay", emoji: "💰" },
+  { id: 5, name: "Bank Transfer", emoji: "🏧" },
+];
+
+function isAuthError(msg: string) {
+  return msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("401") || msg.toLowerCase().includes("expir");
+}
+
+function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; onBack: () => void; onLogout: () => void }) {
   const [methods, setMethods] = useState<DepositMethod[]>([]);
   const [methodsLoading, setMethodsLoading] = useState(true);
   const [methodsError, setMethodsError] = useState("");
+  const [usingFallback, setUsingFallback] = useState(false);
   const [selected, setSelected] = useState<DepositMethod | null>(null);
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -570,10 +583,22 @@ function DepositNewPage({ session, onBack }: { session: UserSession; onBack: () 
     apiPost("GetRechargeTypes", {}, session)
       .then((d) => {
         const list = extractList(d) as DepositMethod[];
-        setMethods(list);
-        if (list.length > 0) setSelected(list[0]);
+        if (list.length > 0) {
+          setMethods(list);
+          setSelected(list[0]);
+        } else {
+          setMethods(FALLBACK_METHODS);
+          setSelected(FALLBACK_METHODS[0]);
+          setUsingFallback(true);
+        }
       })
-      .catch((e) => setMethodsError(String(e)))
+      .catch((e) => {
+        setMethodsError(String(e));
+        // Always show fallback methods even on error so the form stays usable
+        setMethods(FALLBACK_METHODS);
+        setSelected(FALLBACK_METHODS[0]);
+        setUsingFallback(true);
+      })
       .finally(() => setMethodsLoading(false));
   }, []);
 
@@ -689,10 +714,33 @@ function DepositNewPage({ session, onBack }: { session: UserSession; onBack: () 
         </div>
       </div>
 
+      {/* Token-expired warning */}
+      {methodsError && isAuthError(methodsError) && (
+        <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-lg">⚠️</span>
+            <span className="text-orange-800 font-semibold text-sm">Token Expired</span>
+          </div>
+          <p className="text-orange-700 text-xs mb-3">Your session token has expired. Deposit orders require a fresh token — please log out and paste a new one from cklottery.club.</p>
+          <button type="button" onClick={onLogout}
+            className="w-full bg-orange-500 text-white font-semibold py-2.5 rounded-xl text-sm active:opacity-80">
+            Logout &amp; Refresh Token
+          </button>
+        </div>
+      )}
+
       {/* Payment method */}
       <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
-        <div className="text-sm font-semibold text-gray-700 mb-3">Payment Method</div>
-        <ListState loading={methodsLoading} error={methodsError} empty={!methodsLoading && !methodsError && methods.length === 0} />
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-semibold text-gray-700">Payment Method</div>
+          {usingFallback && !methodsError && (
+            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Default</span>
+          )}
+          {usingFallback && methodsError && !isAuthError(methodsError) && (
+            <span className="text-xs text-orange-500">API unavailable</span>
+          )}
+        </div>
+        {methodsLoading && <div className="text-center py-6 text-gray-400 text-sm">Loading methods…</div>}
         {!methodsLoading && methods.length > 0 && (
           <div className="space-y-2">
             {methods.map((m) => (
@@ -701,7 +749,7 @@ function DepositNewPage({ session, onBack }: { session: UserSession; onBack: () 
                 className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-colors ${selected?.id === m.id ? "border-blue-500 bg-blue-50" : "border-gray-100 bg-gray-50 active:bg-gray-100"}`}>
                 {m.logo
                   ? <img src={m.logo} alt={m.name} className="w-8 h-8 rounded-lg object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                  : <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-lg">💳</div>
+                  : <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-lg">{m.emoji ?? "💳"}</div>
                 }
                 <div className="flex-1 text-left">
                   <div className="text-sm font-semibold text-gray-800">{m.name}</div>
@@ -883,7 +931,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
-  if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} />;
+  if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} onLogout={onLogout} />;
 
   if (page === "deposit") return (
     <SubPage title="📥 Deposit History" onBack={() => setPage("main")}>
