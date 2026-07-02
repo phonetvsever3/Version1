@@ -897,14 +897,21 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       return;
     }
     const sel = selected as Record<string, unknown>;
+    // groupPayid = the payment group ID used in GetRechargeTypes (stored as _payid).
+    // Theory: CreateRechargeOrder's "type" = the payment group ID (same as GetRechargeTypes payid).
+    // The method-specific ID (typeId extracted above) goes into bankId/typeId separately.
+    const groupPayid = Number(sel._payid ?? 0);
     const payload: Record<string, unknown> = {
       amount: Number(amount),
-      type: typeId,
+      type: groupPayid > 0 ? groupPayid : typeId,
       ReturnUrl: "https://www.cklottery.club/",
     };
-    // Include payid if we captured it from GetRechargeTypes — required by the API
-    const payid = Number(sel._payid ?? sel.payid ?? 0);
-    if (payid > 0) payload.payid = payid;
+    // Also send the method-specific ID under all common field names
+    if (typeId > 0 && typeId !== groupPayid) {
+      payload.typeId = typeId;
+      payload.bankId = typeId;
+    }
+    if (groupPayid > 0) payload.payid = groupPayid;
     if (selected.code) payload.rechargeType = selected.code;
     if (payerName.trim()) payload.payerName = payerName.trim();
     if (remark.trim()) payload.remark = remark.trim();
@@ -1111,11 +1118,13 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
           </button>
         </div>
       )}
-      {/* API debug info — shows raw error so we can diagnose why GetRechargeTypes fails */}
-      {methodsError && !isAuthError(methodsError) && (
+      {/* API debug info — always shown so we can see what the API returns */}
+      {(methodsRawDebug || (methodsError && !isAuthError(methodsError))) && (
         <div className="bg-gray-50 border border-gray-200 rounded-2xl p-3 mb-3">
           <div className="text-xs font-semibold text-gray-500 mb-1">⚙️ Debug info (share this if deposit fails)</div>
-          <div className="text-xs text-gray-700 break-all font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">{methodsError}</div>
+          <div className="text-xs text-gray-700 break-all font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+            {methodsRawDebug || methodsError}
+          </div>
         </div>
       )}
 
