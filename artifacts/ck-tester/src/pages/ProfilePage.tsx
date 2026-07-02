@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -727,6 +727,7 @@ function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tok
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
           { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
           { icon: "🔑", label: "Token Info", sub: "All data & controls", page: "tokenInfo" },
+          { icon: "✏️", label: "Edit Data", sub: "Change data on server", page: "editData" },
         ] as const).map((h) => (
           <button key={h.page} type="button" onClick={() => onNav(h.page)} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3 text-left active:opacity-70">
             <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-xl shrink-0">{h.icon}</div>
@@ -2333,6 +2334,169 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
             ))}
           </div>
         </div>
+      </SubPage>
+    );
+  }
+
+  // ─── EDIT DATA PAGE ───────────────────────────────────────────────────────────
+  if (page === "editData") {
+    type ProbeHit = { cat: string; ep: string; code: unknown; msg: string; fields: string[] };
+
+    const CAT_META: Record<string, { icon: string; label: string }> = {
+      profile:  { icon: "👤", label: "Profile" },
+      security: { icon: "🔐", label: "Security / Password" },
+      contact:  { icon: "📞", label: "Contact" },
+      finance:  { icon: "🏦", label: "Bank / Finance" },
+      safe:     { icon: "🔒", label: "Safe / Savings" },
+      withdraw: { icon: "📤", label: "Withdrawal" },
+    };
+
+    const [edProbing, setEdProbing] = useState(false);
+    const [edHits, setEdHits] = useState<ProbeHit[]>([]);
+    const [edDone, setEdDone] = useState(false);
+    // Per-endpoint: input values and submit state
+    const [edInputs, setEdInputs] = useState<Record<string, Record<string, string>>>({});
+    const [edSubmit, setEdSubmit] = useState<Record<string, { loading: boolean; ok: boolean; msg: string }>>({});
+
+    async function runProbe() {
+      setEdProbing(true); setEdHits([]); setEdDone(false);
+      try {
+        const res = await fetch("/api/proxy/probe-writable", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: buildAuth(session),
+            "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+            ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+          },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json() as { results: ProbeHit[] };
+        setEdHits(data.results ?? []);
+      } catch (e) {
+        setEdHits([]);
+      }
+      setEdProbing(false); setEdDone(true);
+    }
+
+    async function submitEndpoint(ep: string, fields: string[]) {
+      setEdSubmit(p => ({ ...p, [ep]: { loading: true, ok: false, msg: "" } }));
+      const inputs = edInputs[ep] ?? {};
+      const payload: Record<string, unknown> = { ...inputs };
+      // Add userId if available
+      const uid2 = Number(userInfo?.userId ?? userInfo?.id ?? 0);
+      if (uid2) { payload.userId = uid2; payload.uid = uid2; }
+      try {
+        const res = await fetch(`/api/proxy/ck/${ep}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: buildAuth(session),
+            "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+            ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json() as Record<string, unknown>;
+        const code = data.code ?? data.Code;
+        const msg = String(data.msg ?? data.message ?? JSON.stringify(data));
+        if (code === 0 || code === "0") {
+          setEdSubmit(p => ({ ...p, [ep]: { loading: false, ok: true, msg: `✅ ${msg}` } }));
+          refreshBalance();
+        } else {
+          setEdSubmit(p => ({ ...p, [ep]: { loading: false, ok: false, msg: `code=${String(code)} — ${msg}` } }));
+        }
+      } catch (e) {
+        setEdSubmit(p => ({ ...p, [ep]: { loading: false, ok: false, msg: String(e) } }));
+      }
+    }
+
+    // Group hits by category
+    const grouped = Object.keys(CAT_META).map(cat => ({
+      cat,
+      ...CAT_META[cat],
+      hits: edHits.filter(h => h.cat === cat),
+    })).filter(g => g.hits.length > 0);
+
+    return (
+      <SubPage title="✏️ Edit Data" onBack={() => setPage("main")}>
+
+        {/* ── PROBE ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="flex items-center justify-between mb-1">
+            <div>
+              <div className="text-sm font-bold text-gray-800">🔍 Writable Endpoint Scanner</div>
+              <div className="text-xs text-gray-400 mt-0.5">Finds which changes your token can make on the server</div>
+            </div>
+            <button type="button" disabled={edProbing} onClick={runProbe}
+              className="bg-indigo-500 disabled:bg-indigo-300 text-white text-xs font-bold px-4 py-2 rounded-xl active:opacity-80">
+              {edProbing ? "Scanning…" : edDone ? "Re-scan" : "Scan Now"}
+            </button>
+          </div>
+          {edDone && (
+            <div className={`mt-2 text-xs font-semibold px-3 py-2 rounded-xl ${edHits.length > 0 ? "bg-green-50 text-green-700" : "bg-gray-50 text-gray-500"}`}>
+              {edHits.length > 0
+                ? `✅ ${edHits.length} writable endpoint(s) found — forms below`
+                : "❌ No writable endpoints found with this token"}
+            </div>
+          )}
+        </div>
+
+        {/* ── RESULTS BY CATEGORY ── */}
+        {grouped.map(g => (
+          <div key={g.cat} className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+            <div className="text-sm font-bold text-gray-800 mb-3">{g.icon} {g.label}</div>
+            <div className="space-y-4">
+              {g.hits.map(hit => {
+                const st = edSubmit[hit.ep];
+                const inp = edInputs[hit.ep] ?? {};
+                return (
+                  <div key={hit.ep} className="border border-gray-100 rounded-xl p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-mono font-bold text-indigo-700">{hit.ep}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${hit.code === 0 || hit.code === "0" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                        code={String(hit.code)}
+                      </span>
+                    </div>
+                    {hit.msg && <div className="text-xs text-gray-400 mb-2 truncate">{hit.msg.slice(0, 80)}</div>}
+
+                    {/* Input fields */}
+                    {hit.fields.length > 0 && (
+                      <div className="space-y-2 mb-2">
+                        {hit.fields.map(f => (
+                          <input key={f} type={f.toLowerCase().includes("password") || f.toLowerCase().includes("pwd") || f.toLowerCase().includes("pin") ? "password" : "text"}
+                            placeholder={f}
+                            value={inp[f] ?? ""}
+                            onChange={e => setEdInputs(prev => ({ ...prev, [hit.ep]: { ...prev[hit.ep], [f]: e.target.value } }))}
+                            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-800 bg-gray-50 focus:outline-none focus:border-indigo-300" />
+                        ))}
+                      </div>
+                    )}
+
+                    <button type="button"
+                      disabled={st?.loading || (hit.fields.length > 0 && hit.fields.some(f => !inp[f]?.trim()))}
+                      onClick={() => submitEndpoint(hit.ep, hit.fields)}
+                      className="w-full bg-indigo-500 disabled:bg-indigo-200 text-white text-xs font-bold py-2 rounded-lg active:opacity-80">
+                      {st?.loading ? "Submitting…" : `Apply ${hit.ep}`}
+                    </button>
+
+                    {st && !st.loading && (
+                      <div className={`mt-2 text-xs px-2 py-1.5 rounded-lg break-all ${st.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
+                        {st.msg}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {!edDone && (
+          <div className="text-center text-gray-400 text-xs py-8">
+            Tap "Scan Now" to discover which data you can change with your token
+          </div>
+        )}
       </SubPage>
     );
   }

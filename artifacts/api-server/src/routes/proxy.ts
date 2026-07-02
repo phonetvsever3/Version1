@@ -231,6 +231,106 @@ router.post("/proxy/ck/:endpoint", async (req, res) => {
   }
 });
 
+// Probe writable endpoints — sends minimal payload to see what EXISTS vs "url not exist"
+// Does NOT submit real data; uses clearly-invalid payload so the server rejects it, not ignores it.
+router.post("/proxy/probe-writable", async (req, res) => {
+  const authorization = req.headers["authorization"] as string | undefined;
+  const tokenHeader   = req.headers["x-ck-token-header"] as string | undefined;
+  const cfClearance   = req.headers["x-ck-cf-clearance"] as string | undefined;
+
+  const CANDIDATES: { cat: string; ep: string; fields: string[] }[] = [
+    // Profile
+    { cat: "profile",  ep: "UpdateNickName",         fields: ["nickName"] },
+    { cat: "profile",  ep: "ChangeNickName",          fields: ["nickName"] },
+    { cat: "profile",  ep: "SetNickName",             fields: ["nickName"] },
+    { cat: "profile",  ep: "ModifyNickName",          fields: ["nickName"] },
+    { cat: "profile",  ep: "UpdateUserNickName",      fields: ["nickName"] },
+    { cat: "profile",  ep: "UpdateAvatar",            fields: ["avatar"] },
+    { cat: "profile",  ep: "ChangeAvatar",            fields: ["avatar"] },
+    { cat: "profile",  ep: "UpdateUserInfo",          fields: ["nickName"] },
+    { cat: "profile",  ep: "ModifyUserInfo",          fields: ["nickName"] },
+    { cat: "profile",  ep: "SetUserInfo",             fields: ["nickName"] },
+    // Security
+    { cat: "security", ep: "ChangePassword",          fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "UpdatePassword",          fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "ModifyPassword",          fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "ChangeLoginPassword",     fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "UpdateLoginPassword",     fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "ChangeWithdrawPassword",  fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "UpdateWithdrawPwd",       fields: ["oldPwd","newPwd"] },
+    { cat: "security", ep: "SetWithdrawPin",          fields: ["pin"] },
+    { cat: "security", ep: "ModifyWithdrawPassword",  fields: ["oldPassword","newPassword"] },
+    { cat: "security", ep: "ChangeWithdrawPwd",       fields: ["oldPwd","newPwd"] },
+    // Contact
+    { cat: "contact",  ep: "BindPhone",               fields: ["phone","code"] },
+    { cat: "contact",  ep: "BindMobile",              fields: ["mobile","code"] },
+    { cat: "contact",  ep: "UpdatePhone",             fields: ["phone","code"] },
+    { cat: "contact",  ep: "ChangePhone",             fields: ["phone"] },
+    { cat: "contact",  ep: "BindEmail",               fields: ["email","code"] },
+    { cat: "contact",  ep: "UpdateEmail",             fields: ["email"] },
+    { cat: "contact",  ep: "ChangeEmail",             fields: ["email","code"] },
+    // Finance / bank
+    { cat: "finance",  ep: "AddBankCard",             fields: ["bankName","cardNumber","name"] },
+    { cat: "finance",  ep: "BindBankCard",            fields: ["bankName","cardNumber","name"] },
+    { cat: "finance",  ep: "AddWithdrawAccount",      fields: ["bankName","cardNumber","name"] },
+    { cat: "finance",  ep: "BindBank",                fields: ["bankName","cardNumber"] },
+    { cat: "finance",  ep: "DeleteBankCard",          fields: ["id"] },
+    { cat: "finance",  ep: "RemoveBankCard",          fields: ["id"] },
+    { cat: "finance",  ep: "GetBankCard",             fields: [] },
+    { cat: "finance",  ep: "GetWithdrawAccount",      fields: [] },
+    // Safe / savings
+    { cat: "safe",     ep: "OpenSafe",                fields: ["password"] },
+    { cat: "safe",     ep: "DepositSafe",             fields: ["amount"] },
+    { cat: "safe",     ep: "WithdrawSafe",            fields: ["amount","password"] },
+    { cat: "safe",     ep: "CloseSafe",               fields: ["password"] },
+    { cat: "safe",     ep: "GetSafeInfo",             fields: [] },
+    // Withdrawal
+    { cat: "withdraw", ep: "CreateWithdrawOrder",     fields: ["amount","bankCardId"] },
+    { cat: "withdraw", ep: "SubmitWithdraw",          fields: ["amount","bankCardId"] },
+    { cat: "withdraw", ep: "ApplyWithdraw",           fields: ["amount"] },
+    { cat: "withdraw", ep: "Withdraw",                fields: ["amount","bankCardId"] },
+    { cat: "withdraw", ep: "UserWithdraw",            fields: ["amount"] },
+    { cat: "withdraw", ep: "GetWithdrawInfo",         fields: [] },
+    { cat: "withdraw", ep: "GetWithdrawLimit",        fields: [] },
+  ];
+
+  const authHeaders = {
+    ...commonHeaders,
+    ...(authorization ? { Authorization: authorization }     : {}),
+    ...(tokenHeader    ? { "token-header": tokenHeader }     : {}),
+    ...(cfClearance   ? { Cookie: `cf_clearance=${cfClearance}` } : {}),
+  };
+
+  // Probe: send clearly-minimal payload so server replies with validation error (proves it EXISTS)
+  // rather than "url not exist" (proves it DOESN'T)
+  const results: { cat: string; ep: string; code: unknown; msg: string; fields: string[] }[] = [];
+
+  await Promise.all(CANDIDATES.map(async ({ cat, ep, fields }) => {
+    const payload = ckSign({ probe: 1 }); // intentionally minimal
+    try {
+      const response = await fetch(`${CK_BASE}/${ep}`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+      const result = await safeJson(response);
+      if (!result.ok) return;
+      const data = result.data as Record<string, unknown>;
+      const code = data.code ?? data.Code;
+      const msg  = String(data.msg ?? data.message ?? data.error ?? "");
+      const m    = msg.toLowerCase();
+      const notExist = m.includes("url is not exist") || m.includes("url not exist") ||
+        m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+        m.includes("no such")   || m.includes("invalid url");
+      if (notExist) return;
+      // Endpoint EXISTS — record it (even if code !== 0, that's just a validation error)
+      results.push({ cat, ep, code, msg, fields });
+    } catch { /* skip */ }
+  }));
+
+  res.json({ results });
+});
+
 // Server-side parallel balance probe — tries all allowed bases simultaneously
 // Much faster than sequential client-side scanning; returns structured hits.
 router.post("/proxy/add-balance", async (req, res) => {
