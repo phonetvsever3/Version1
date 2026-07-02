@@ -1413,6 +1413,12 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [wingoResults, setWingoResults] = useState<Record<string, unknown>[]>([]);
   const [wingoLoading, setWingoLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // editData page state (hoisted to avoid hooks-in-conditional violation)
+  const [edProbing, setEdProbing] = useState(false);
+  const [edHits, setEdHits] = useState<{ cat: string; ep: string; code: unknown; msg: string; fields: string[] }[]>([]);
+  const [edDone, setEdDone] = useState(false);
+  const [edInputs, setEdInputs] = useState<Record<string, Record<string, string>>>({});
+  const [edSubmit, setEdSubmit] = useState<Record<string, { loading: boolean; ok: boolean; msg: string }>>({});
 
   const claims = initialUserInfo?._jwtClaims as Record<string, unknown> | null;
 
@@ -2350,13 +2356,6 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       safe:     { icon: "🔒", label: "Safe / Savings" },
       withdraw: { icon: "📤", label: "Withdrawal" },
     };
-
-    const [edProbing, setEdProbing] = useState(false);
-    const [edHits, setEdHits] = useState<ProbeHit[]>([]);
-    const [edDone, setEdDone] = useState(false);
-    // Per-endpoint: input values and submit state
-    const [edInputs, setEdInputs] = useState<Record<string, Record<string, string>>>({});
-    const [edSubmit, setEdSubmit] = useState<Record<string, { loading: boolean; ok: boolean; msg: string }>>({});
 
     async function runProbe() {
       setEdProbing(true); setEdHits([]); setEdDone(false);
