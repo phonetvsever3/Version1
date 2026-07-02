@@ -864,12 +864,35 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
 
   // Extract useful fields from wheel info
   const data = wheelInfo ? ((wheelInfo.data ?? wheelInfo) as Record<string, unknown>) : null;
-  const remainSpins = data ? Number(
-    data.remainTimes ?? data.remainCount ?? data.times ?? data.spinCount ?? data.count ?? data.num ?? 0
+
+  // GetInvitedWheelInfo fields: userInvitedWheelCount (total), userInvitedWheelAmount (used)
+  const totalSpins = data ? Number(
+    data.userInvitedWheelCount ?? data.totalTimes ?? data.total ?? data.maxTimes ?? data.totalCount ?? 0
   ) : 0;
-  const totalSpins  = data ? Number(data.totalTimes ?? data.total ?? data.maxTimes ?? 0) : 0;
+  const usedSpins = data ? Number(
+    data.userInvitedWheelAmount ?? data.usedTimes ?? data.usedCount ?? data.used ?? 0
+  ) : 0;
+  const remainSpins = data ? (() => {
+    // Try explicit remain fields first
+    for (const k of ["remainTimes","remainCount","times","spinCount","remainSpins","count","num","leftTimes","leftCount"]) {
+      const v = (data as Record<string, unknown>)[k];
+      if (v !== undefined && v !== null && Number(v) > 0) return Number(v);
+    }
+    // Derive: total - used
+    if (totalSpins > 0) return Math.max(0, totalSpins - usedSpins);
+    return 0;
+  })() : 0;
+
+  // Prize amounts — GetInvitedWheelInfo returns diskDisplayAmount as array of numbers
+  const diskAmounts: number[] = Array.isArray(data?.diskDisplayAmount)
+    ? (data!.diskDisplayAmount as unknown[]).map(Number)
+    : [];
+  const totalPrize = data ? Number(data.invitedWheelTotalPrizeAmount ?? data.totalPrize ?? data.prizeAmount ?? 0) : 0;
+
   const prizes: Record<string, unknown>[] = (() => {
     if (!data) return [];
+    // Prefer diskDisplayAmount from GetInvitedWheelInfo
+    if (diskAmounts.length > 0) return diskAmounts.map(a => ({ name: `K${a.toLocaleString()}`, amount: a }));
     for (const k of ["prizeList", "rewardList", "list", "items", "gifts", "prizes", "giftList", "awardList"]) {
       if (Array.isArray(data[k])) return data[k] as Record<string, unknown>[];
     }
@@ -893,13 +916,20 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
 
         {/* Spin count banner */}
         {!infoLoading && !infoError && (
-          <div className="flex justify-center mb-6">
-            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-6 py-3 text-center">
+          <div className="flex justify-center mb-6 gap-3">
+            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-5 py-3 text-center">
               <div className="text-yellow-300 text-xs mb-1 font-medium">Remaining Spins</div>
               <div className="text-white text-3xl font-bold">{remainSpins}</div>
-              {totalSpins > 0 && <div className="text-yellow-400/60 text-xs mt-1">of {totalSpins} total</div>}
-              {infoEp && <div className="text-yellow-400/40 text-[10px] mt-1 font-mono">{infoEp}</div>}
+              <div className="text-yellow-400/50 text-[10px] mt-1">{usedSpins} used / {totalSpins} total</div>
+              {infoEp && <div className="text-yellow-400/30 text-[9px] mt-0.5 font-mono">{infoEp}</div>}
             </div>
+            {totalPrize > 0 && (
+              <div className="bg-orange-500/10 border border-orange-400/30 rounded-2xl px-5 py-3 text-center">
+                <div className="text-orange-300 text-xs mb-1 font-medium">Total Prize</div>
+                <div className="text-white text-2xl font-bold">K{totalPrize.toLocaleString()}</div>
+                <div className="text-orange-400/50 text-[10px] mt-1">reward pool</div>
+              </div>
+            )}
           </div>
         )}
 
@@ -930,8 +960,9 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
               {prizes[i] && (
                 <span className="text-yellow-300 text-xs font-bold text-center leading-tight">
                   {String(
-                    prizes[i].prizeName ?? prizes[i].rewardName ?? prizes[i].name ??
-                    prizes[i].amount ?? prizes[i].money ?? `#${i + 1}`
+                    prizes[i].name ?? prizes[i].prizeName ?? prizes[i].rewardName ??
+                    (prizes[i].amount ? `K${Number(prizes[i].amount).toLocaleString()}` : null) ??
+                    prizes[i].money ?? `#${i + 1}`
                   )}
                 </span>
               )}
