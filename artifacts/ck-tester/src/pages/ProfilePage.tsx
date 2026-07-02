@@ -573,9 +573,15 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [usingFallback, setUsingFallback] = useState(false);
   const [selected, setSelected] = useState<DepositMethod | null>(null);
   const [amount, setAmount] = useState("");
+  const [payerName, setPayerName] = useState("");
+  const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [orderResult, setOrderResult] = useState<Record<string, unknown> | null>(null);
+  const [utr, setUtr] = useState("");
+  const [utrSubmitting, setUtrSubmitting] = useState(false);
+  const [utrError, setUtrError] = useState("");
+  const [utrSuccess, setUtrSuccess] = useState(false);
 
   const PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
 
@@ -611,6 +617,8 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       ReturnUrl: "https://www.cklottery.club/",
     };
     if (selected.code) payload.rechargeType = selected.code;
+    if (payerName.trim()) payload.payerName = payerName.trim();
+    if (remark.trim()) payload.remark = remark.trim();
     apiPost("CreateRechargeOrder", payload, session)
       .then((d) => {
         const data = (d?.data ?? d) as Record<string, unknown>;
@@ -679,9 +687,61 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         )}
 
         {/* Show any other scalar fields not already displayed */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Full Order Details</div>
           <RecordFields item={orderResult} skip={["payUrl","url","qrUrl","payLink","redirectUrl","qrCode","qrCodeUrl","scanCode","qr","orderNum","orderNo","serialNo","id","orderId","bankAccount","accountNo","receiveAccount","bankNo","cardNo","bankName","receiveBankName","payBankName","accountName","receiveName","holderName","ifscCode","ifsc","bankCode","upiId","upiAccount","vpa"]} />
+        </div>
+
+        {/* ── UTR / Transaction ID submission ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-1">Submit Transaction ID (UTR)</div>
+          <div className="text-xs text-gray-400 mb-3">After you complete the payment, enter your UTR or transaction reference number here to confirm your deposit.</div>
+          {utrSuccess ? (
+            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-green-700 text-sm flex items-center gap-2">
+              <span>✅</span> UTR submitted successfully! Your deposit is under review.
+            </div>
+          ) : (
+            <>
+              <input
+                type="text"
+                placeholder="Enter UTR / Transaction ID"
+                value={utr}
+                onChange={(e) => setUtr(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50 mb-2"
+              />
+              {utrError && (
+                <div className="text-red-600 text-xs mb-2">{utrError}</div>
+              )}
+              <button
+                type="button"
+                disabled={utrSubmitting || !utr.trim()}
+                onClick={() => {
+                  if (!utr.trim()) return;
+                  setUtrSubmitting(true); setUtrError("");
+                  const utrPayload: Record<string, unknown> = {
+                    utr: utr.trim(),
+                    orderNum: orderNo ?? "",
+                  };
+                  apiPost("ArUpiSubmitUtr", utrPayload, session)
+                    .then(() => setUtrSuccess(true))
+                    .catch((e: unknown) => {
+                      // fallback: try UpRechargesBankOrder
+                      const errStr = String(e);
+                      if (errStr.toLowerCase().includes("not found") || errStr.includes("404")) {
+                        apiPost("UpRechargesBankOrder", { ...utrPayload, transactionId: utr.trim() }, session)
+                          .then(() => setUtrSuccess(true))
+                          .catch((e2: unknown) => setUtrError(String(e2)));
+                      } else {
+                        setUtrError(errStr);
+                      }
+                    })
+                    .finally(() => setUtrSubmitting(false));
+                }}
+                className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-bold py-3 rounded-xl text-sm shadow disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90">
+                {utrSubmitting ? "Submitting…" : "Submit UTR"}
+              </button>
+            </>
+          )}
         </div>
       </SubPage>
     );
@@ -711,6 +771,31 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
               K{p.toLocaleString()}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Extra fields: payer name + remark */}
+      <div className="bg-white rounded-2xl shadow-sm p-5 mb-3 space-y-3">
+        <div className="text-sm font-semibold text-gray-700">Your Details</div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Your Name (optional)</label>
+          <input
+            type="text"
+            placeholder="Name on your bank / wallet account"
+            value={payerName}
+            onChange={(e) => setPayerName(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Remark / Note (optional)</label>
+          <input
+            type="text"
+            placeholder="e.g. Top up, Wave transfer…"
+            value={remark}
+            onChange={(e) => setRemark(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
+          />
         </div>
       </div>
 
