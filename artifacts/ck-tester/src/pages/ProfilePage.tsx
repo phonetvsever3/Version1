@@ -701,7 +701,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [methodsError, setMethodsError] = useState("");
   const [usingFallback, setUsingFallback] = useState(false);
   const [selected, setSelected] = useState<DepositMethod | null>(null);
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState("5000");
   const [payerName, setPayerName] = useState("");
   const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
