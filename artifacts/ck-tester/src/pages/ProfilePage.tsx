@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -392,13 +392,17 @@ function GameHomePage({
       {(activeCat === "Lottery" || activeCat === "Popular") && (
         <div className="mx-4 mt-3">
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-            <div className="bg-gradient-to-r from-purple-500 to-blue-500 px-4 py-3 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => onNav("wingo")}
+              className="w-full bg-gradient-to-r from-purple-500 to-blue-500 px-4 py-3 flex items-center justify-between active:opacity-80"
+            >
               <div className="flex items-center gap-2">
                 <span className="text-white text-xl">🎱</span>
                 <span className="text-white font-bold">WinGo Lottery</span>
               </div>
-              <span className="text-white/70 text-xs">Recent Results</span>
-            </div>
+              <span className="text-white/90 text-xs font-semibold">Play Now ›</span>
+            </button>
             {wingoLoading ? (
               <div className="py-6 text-center text-gray-400 text-sm">Loading results...</div>
             ) : wingoResults.length === 0 ? (
@@ -1362,6 +1366,613 @@ function InfoRow({ label, value, copyable = false }: { label: string; value: str
   );
 }
 
+// ─── WinGo Game Page ──────────────────────────────────────────────────────────
+
+const WINGO_TYPES = [
+  { label: "Win Go\n30s", short: "30s", typeId: 1, duration: 30 },
+  { label: "Win Go\n1Min", short: "1Min", typeId: 2, duration: 60 },
+  { label: "Win Go\n3Min", short: "3Min", typeId: 3, duration: 180 },
+  { label: "Win Go\n5Min", short: "5Min", typeId: 4, duration: 300 },
+] as const;
+
+function getNumBallClass(n: number): string {
+  if (n === 0) return "bg-gradient-to-br from-red-500 to-red-700 ring-2 ring-violet-400 ring-offset-1";
+  if (n === 5) return "bg-gradient-to-br from-green-500 to-green-700 ring-2 ring-violet-400 ring-offset-1";
+  if (n % 2 === 1) return "bg-gradient-to-br from-green-400 to-green-600";
+  return "bg-gradient-to-br from-red-400 to-red-600";
+}
+
+function numIsBig(n: number) { return n >= 5; }
+
+function winColorDot(c: unknown): string {
+  const s = String(c ?? "").toLowerCase();
+  if (s.includes("green")) return "bg-green-500";
+  if (s.includes("red")) return "bg-red-500";
+  if (s.includes("violet") || s.includes("purple")) return "bg-violet-500";
+  return "bg-gray-400";
+}
+
+function WinGoGamePage({
+  session,
+  onBack,
+}: {
+  session: UserSession;
+  onBack: () => void;
+}) {
+  const [typeIndex, setTypeIndex] = useState(0);
+  const activeType = WINGO_TYPES[typeIndex];
+
+  const [period, setPeriod] = useState("—");
+  const [timeLeft, setTimeLeft] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [results, setResults] = useState<Record<string, unknown>[]>([]);
+  const [resultsLoading, setResultsLoading] = useState(true);
+
+  const [myBets, setMyBets] = useState<Record<string, unknown>[]>([]);
+  const [myBetsLoading, setMyBetsLoading] = useState(false);
+  const [myBetsError, setMyBetsError] = useState("");
+
+  const [selectedBet, setSelectedBet] = useState<{ type: string; value: string; label: string; colorClass: string } | null>(null);
+  const [betAmt, setBetAmt] = useState("10");
+  const [multiplier, setMultiplier] = useState(1);
+  const [betLoading, setBetLoading] = useState(false);
+  const [betMsg, setBetMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [historyTab, setHistoryTab] = useState<"game" | "chart" | "my">("game");
+  const [balance, setBalance] = useState("—");
+  const [showHowTo, setShowHowTo] = useState(false);
+
+  const totalBet = (Number(betAmt) || 0) * multiplier;
+
+  const fetchBalance = useCallback(() => {
+    apiPost("GetUserInfo", {}, session)
+      .then(d => {
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        const bal = data?.balance ?? data?.amount ?? data?.money ?? data?.totalBalance;
+        if (bal !== undefined) setBalance(String(bal));
+      })
+      .catch(() => {});
+  }, [session]);
+
+  const fetchPeriod = useCallback(async () => {
+    for (const ep of ["GetCurrentIssue", "GetGameInfo", "GetGameIssue", "GetCurrentPeriod"]) {
+      try {
+        const d = await apiPost(ep, { typeId: activeType.typeId }, session);
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        if (data && (data.issueNum || data.period || data.issue || data.countDown !== undefined || data.remainTime !== undefined)) {
+          const p = String(data.issueNum ?? data.period ?? data.issue ?? data.no ?? "");
+          if (p) setPeriod(p);
+          const ct = Number(data.countDown ?? data.countdown ?? data.remainTime ?? data.remainSeconds ?? data.leftTime ?? 0);
+          if (ct > 0) setTimeLeft(ct);
+          return;
+        }
+      } catch { /* try next */ }
+    }
+  }, [session, activeType.typeId]);
+
+  const fetchResults = useCallback(() => {
+    setResultsLoading(true);
+    apiPost("GetEmerdList", { typeId: activeType.typeId, pageNo: 1, pageSize: 30 }, session)
+      .then(d => {
+        const list = extractList(d);
+        setResults(list);
+        if (list.length > 0 && period === "—") {
+          const p = String(list[0].period ?? list[0].issueNumber ?? list[0].no ?? "");
+          if (p) setPeriod(p + " (current)");
+        }
+      })
+      .catch(() => {})
+      .finally(() => setResultsLoading(false));
+  }, [session, activeType.typeId, period]);
+
+  const fetchMyBets = useCallback(() => {
+    setMyBetsLoading(true);
+    setMyBetsError("");
+    const eps = ["BetRecords", "GetBettingRecord", "GetUserBettingHistory", "MyBetList", "WingoBetRecord"];
+    const tryNext = (i: number) => {
+      if (i >= eps.length) { setMyBetsLoading(false); setMyBetsError("No bet history endpoint found"); return; }
+      apiPost(eps[i], { typeId: activeType.typeId, pageIndex: 1, pageSize: 20 }, session)
+        .then(d => { setMyBets(extractList(d)); setMyBetsLoading(false); })
+        .catch(() => tryNext(i + 1));
+    };
+    tryNext(0);
+  }, [session, activeType.typeId]);
+
+  const startTimer = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setTimeLeft(t => {
+        if (t <= 1) {
+          setTimeout(() => { fetchResults(); fetchPeriod(); }, 500);
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+  }, [fetchResults, fetchPeriod]);
+
+  useEffect(() => {
+    setResults([]);
+    setMyBets([]);
+    setPeriod("—");
+    setTimeLeft(0);
+    setResultsLoading(true);
+    setBetMsg(null);
+
+    fetchPeriod().then(() => startTimer());
+    fetchResults();
+    fetchBalance();
+
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => { fetchPeriod(); }, 5000);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [typeIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const placeBet = async () => {
+    if (!selectedBet) return;
+    setBetLoading(true);
+    setBetMsg(null);
+    try {
+      await apiPost("BettingWingo", {
+        typeId: activeType.typeId,
+        number: selectedBet.value,
+        betAmount: Number(betAmt) || 10,
+        multiple: multiplier,
+      }, session);
+      setBetMsg({ ok: true, text: "Bet placed successfully!" });
+      setSelectedBet(null);
+      setTimeout(() => { fetchBalance(); fetchMyBets(); }, 1200);
+    } catch (e) {
+      setBetMsg({ ok: false, text: String(e) });
+    } finally {
+      setBetLoading(false);
+    }
+  };
+
+  const mm = String(Math.floor(timeLeft / 60)).padStart(2, "0");
+  const ss = String(timeLeft % 60).padStart(2, "0");
+  const lastFive = results.slice(0, 5);
+  const bettingLocked = timeLeft > 0 && timeLeft <= 5;
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col pb-4 relative">
+      {/* Sticky header + tabs */}
+      <div className="bg-gradient-to-r from-blue-600 to-blue-500 sticky top-0 z-10">
+        <div className="flex items-center px-4 pt-10 pb-2 gap-2">
+          <button onClick={onBack} className="text-white text-3xl leading-none w-8 shrink-0">‹</button>
+          <span className="text-white font-bold text-lg">WinGo</span>
+          <div className="ml-auto bg-white/20 rounded-xl px-3 py-1">
+            <span className="text-white text-xs font-bold">K{balance}</span>
+          </div>
+        </div>
+        <div className="flex">
+          {WINGO_TYPES.map((t, i) => (
+            <button
+              key={t.typeId}
+              type="button"
+              onClick={() => { setTypeIndex(i); setHistoryTab("game"); }}
+              className={`flex-1 py-2 text-xs font-semibold border-b-2 transition-all ${
+                typeIndex === i ? "border-white text-white bg-white/10" : "border-transparent text-blue-200"
+              }`}
+            >
+              <div>Win Go</div>
+              <div>{t.short}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Period info + mini results */}
+      <div className="mx-3 mt-3 bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="flex items-start gap-2 px-3 pt-3 pb-2">
+          <button
+            type="button"
+            onClick={() => setShowHowTo(v => !v)}
+            className="flex items-center gap-1.5 bg-gray-100 text-gray-600 text-xs font-medium px-3 py-2 rounded-full shrink-0 active:opacity-70"
+          >
+            <span>📋</span> How to play
+          </button>
+          <div className="flex-1" />
+          <div className="text-right shrink-0">
+            <div className="text-[10px] text-gray-400 mb-1">Time remaining</div>
+            <div className="flex items-center justify-end gap-0.5">
+              {[mm[0], mm[1], ":", ss[0], ss[1]].map((c, i) =>
+                c === ":" ? (
+                  <span key={i} className="text-gray-800 font-bold text-lg mx-0.5">:</span>
+                ) : (
+                  <div key={i} className="w-7 h-8 bg-gray-800 text-white rounded-md flex items-center justify-center font-bold text-base">
+                    {c}
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="px-3 pb-3 flex items-center gap-2">
+          <span className="text-[10px] text-gray-400 shrink-0">Win Go {activeType.short}</span>
+          <div className="flex gap-1">
+            {lastFive.map((r, i) => {
+              const n = Number(String(r.number ?? r.result ?? "0").charAt(0));
+              return (
+                <div key={i} className={`w-6 h-6 rounded-full ${getNumBallClass(n)} flex items-center justify-center text-white text-[10px] font-bold shadow-sm`}>
+                  {n}
+                </div>
+              );
+            })}
+            {lastFive.length === 0 && resultsLoading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
+          </div>
+          <div className="ml-auto text-[10px] text-gray-400 font-mono truncate max-w-[130px]">{period}</div>
+        </div>
+        {showHowTo && (
+          <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-600 space-y-1.5 bg-gray-50">
+            <div className="font-semibold text-gray-700">How to play Win Go:</div>
+            <div>• Pick a <strong>number (0–9)</strong>, <strong>color</strong> (Green/Red/Violet), or <strong>size</strong> (Big/Small)</div>
+            <div>• <strong>Big</strong>: numbers 5–9 &nbsp;|&nbsp; <strong>Small</strong>: numbers 0–4</div>
+            <div>• <strong>Green</strong>: 1,3,7,9 &nbsp;|&nbsp; <strong>Red</strong>: 0,2,4,6,8 &nbsp;|&nbsp; <strong>Violet</strong>: 0,5</div>
+            <div>• Number wins pay ≈9× &nbsp;|&nbsp; Color wins pay ≈2× &nbsp;|&nbsp; Big/Small pay ≈2×</div>
+          </div>
+        )}
+      </div>
+
+      {/* Betting area */}
+      <div className={`mx-3 mt-2 bg-white rounded-2xl shadow-sm px-3 py-4 space-y-3 transition-opacity ${bettingLocked ? "opacity-50 pointer-events-none" : ""}`}>
+        {bettingLocked && (
+          <div className="text-center text-xs text-red-500 font-semibold">⏳ Betting locked — waiting for result…</div>
+        )}
+
+        {/* Color buttons */}
+        <div className="grid grid-cols-3 gap-2">
+          <button type="button" onClick={() => setSelectedBet({ type: "color", value: "Green", label: "Green", colorClass: "bg-green-500" })}
+            className="bg-green-500 text-white py-3 rounded-xl font-bold text-base active:opacity-80">Green</button>
+          <button type="button" onClick={() => setSelectedBet({ type: "color", value: "Violet", label: "Violet", colorClass: "bg-violet-500" })}
+            className="bg-violet-500 text-white py-3 rounded-xl font-bold text-base active:opacity-80">Violet</button>
+          <button type="button" onClick={() => setSelectedBet({ type: "color", value: "Red", label: "Red", colorClass: "bg-red-500" })}
+            className="bg-red-500 text-white py-3 rounded-xl font-bold text-base active:opacity-80">Red</button>
+        </div>
+
+        {/* Number balls */}
+        <div className="grid grid-cols-5 gap-2">
+          {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setSelectedBet({ type: "number", value: String(n), label: String(n), colorClass: getNumBallClass(n) })}
+              className={`aspect-square rounded-full ${getNumBallClass(n)} flex items-center justify-center text-white font-bold text-lg shadow-md active:scale-95 transition-transform`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        {/* Multiplier row */}
+        <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+          <button
+            type="button"
+            onClick={() => {
+              const r = Math.floor(Math.random() * 10);
+              setSelectedBet({ type: "number", value: String(r), label: `Random (${r})`, colorClass: getNumBallClass(r) });
+            }}
+            className="flex-shrink-0 px-3 py-2 rounded-xl border-2 border-orange-300 text-orange-500 font-semibold text-xs bg-orange-50 active:opacity-70"
+          >
+            Random
+          </button>
+          {[1, 5, 10, 20, 50, 100].map(m => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMultiplier(m)}
+              className={`flex-shrink-0 px-3 py-2 rounded-xl border-2 text-xs font-semibold transition-colors ${
+                multiplier === m ? "border-green-500 bg-green-500 text-white" : "border-gray-200 text-gray-600 bg-gray-50"
+              }`}
+            >
+              X{m}
+            </button>
+          ))}
+        </div>
+
+        {/* Big / Small */}
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => setSelectedBet({ type: "size", value: "Big", label: "Big", colorClass: "bg-orange-400" })}
+            className="bg-orange-400 text-white py-3.5 rounded-xl font-bold text-base active:opacity-80">Big</button>
+          <button type="button" onClick={() => setSelectedBet({ type: "size", value: "Small", label: "Small", colorClass: "bg-blue-400" })}
+            className="bg-blue-400 text-white py-3.5 rounded-xl font-bold text-base active:opacity-80">Small</button>
+        </div>
+      </div>
+
+      {/* Bet result toast */}
+      {betMsg && (
+        <div className={`mx-3 mt-2 rounded-2xl px-4 py-3 text-sm font-medium flex items-center gap-2 ${
+          betMsg.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"
+        }`}>
+          <span>{betMsg.ok ? "✅" : "❌"}</span>
+          <span className="break-all">{betMsg.text}</span>
+          <button type="button" onClick={() => setBetMsg(null)} className="ml-auto text-lg opacity-50">×</button>
+        </div>
+      )}
+
+      {/* History tabs */}
+      <div className="mx-3 mt-2 bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="flex border-b border-gray-100">
+          {(["game", "chart", "my"] as const).map(t => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => {
+                setHistoryTab(t);
+                if (t === "my" && myBets.length === 0 && !myBetsLoading) fetchMyBets();
+              }}
+              className={`flex-1 py-3 text-xs font-semibold transition-colors ${
+                historyTab === t ? "text-blue-500 border-b-2 border-blue-500" : "text-gray-400"
+              }`}
+            >
+              {t === "game" ? "Game history" : t === "chart" ? "Chart" : "My history"}
+            </button>
+          ))}
+        </div>
+
+        {/* Game history tab */}
+        {historyTab === "game" && (
+          <div>
+            <div className="grid grid-cols-4 bg-blue-500 text-white text-xs font-semibold px-3 py-2">
+              <span>Period</span>
+              <span className="text-center">Number</span>
+              <span className="text-center">Big Small</span>
+              <span className="text-center">Color</span>
+            </div>
+            {resultsLoading ? (
+              <div className="py-8 text-center text-gray-400 text-sm animate-pulse">Loading…</div>
+            ) : results.length === 0 ? (
+              <div className="py-8 text-center text-gray-400 text-sm">No data</div>
+            ) : (
+              <div className="divide-y divide-gray-50">
+                {results.slice(0, 20).map((r, i) => {
+                  const n = Number(String(r.number ?? r.result ?? "0").charAt(0));
+                  const big = numIsBig(n);
+                  const p = String(r.period ?? r.issueNumber ?? r.no ?? "—");
+                  const winColorRaw = String(r.color ?? r.winColor ?? r.winColorName ?? "");
+                  const colors = winColorRaw
+                    ? winColorRaw.split(/[,&+|]/).map(s => s.trim()).filter(Boolean)
+                    : [n === 0 ? "Red" : n === 5 ? "Green" : n % 2 === 0 ? "Red" : "Green"];
+                  if ((n === 0 || n === 5) && !colors.some(c => c.toLowerCase().includes("violet"))) {
+                    colors.push("Violet");
+                  }
+                  return (
+                    <div key={i} className="grid grid-cols-4 px-3 py-2.5 items-center">
+                      <span className="text-[10px] text-gray-500 font-mono truncate">{p}</span>
+                      <div className="flex justify-center">
+                        <div className={`w-7 h-7 rounded-full ${getNumBallClass(n)} flex items-center justify-center text-white text-xs font-bold shadow-sm`}>
+                          {n}
+                        </div>
+                      </div>
+                      <span className={`text-xs text-center font-semibold ${big ? "text-orange-500" : "text-blue-500"}`}>
+                        {big ? "Big" : "Small"}
+                      </span>
+                      <div className="flex justify-center gap-1">
+                        {colors.map((col, j) => (
+                          <div key={j} className={`w-3.5 h-3.5 rounded-full shadow-sm ${winColorDot(col)}`} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Chart tab */}
+        {historyTab === "chart" && (
+          <div className="px-3 py-3">
+            {/* Stats */}
+            <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 mb-3">
+              <div className="text-xs font-semibold text-blue-700 mb-2">Statistic (last {results.length} Periods)</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-center" style={{ minWidth: 320 }}>
+                  <thead>
+                    <tr>
+                      <td className="text-[10px] text-gray-500 text-left pr-1 py-0.5">Winning number</td>
+                      {[0,1,2,3,4,5,6,7,8,9].map(n => (
+                        <td key={n} className="py-0.5">
+                          <div className={`w-5 h-5 rounded-full ${getNumBallClass(n)} text-white flex items-center justify-center text-[9px] font-bold mx-auto`}>{n}</div>
+                        </td>
+                      ))}
+                    </tr>
+                    <tr>
+                      <td className="text-[10px] text-gray-500 text-left pr-1 py-0.5">Missing</td>
+                      {[0,1,2,3,4,5,6,7,8,9].map(n => {
+                        let m = 0;
+                        for (const r of results) { if (Number(String(r.number ?? r.result ?? "").charAt(0)) === n) break; m++; }
+                        return <td key={n} className="text-[10px] text-gray-700 py-0.5">{m}</td>;
+                      })}
+                    </tr>
+                    <tr>
+                      <td className="text-[10px] text-gray-500 text-left pr-1 py-0.5">Frequency</td>
+                      {[0,1,2,3,4,5,6,7,8,9].map(n => {
+                        const f = results.filter(r => Number(String(r.number ?? r.result ?? "").charAt(0)) === n).length;
+                        return <td key={n} className="text-[10px] text-gray-700 py-0.5">{f}</td>;
+                      })}
+                    </tr>
+                  </thead>
+                </table>
+              </div>
+            </div>
+            {/* Period rows */}
+            <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
+              {results.slice(0, 30).map((r, i) => {
+                const winNum = Number(String(r.number ?? r.result ?? "0").charAt(0));
+                const big = numIsBig(winNum);
+                const p = String(r.period ?? r.issueNumber ?? r.no ?? "—");
+                return (
+                  <div key={i} className="flex items-center gap-1 py-1">
+                    <span className="text-[9px] text-gray-400 font-mono w-[88px] shrink-0 truncate">{p}</span>
+                    <div className="flex gap-0.5 flex-1 justify-center">
+                      {[0,1,2,3,4,5,6,7,8,9].map(n => (
+                        <div
+                          key={n}
+                          className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                            n === winNum
+                              ? `${getNumBallClass(n)} text-white shadow`
+                              : "border border-gray-200 text-gray-400"
+                          }`}
+                        >
+                          {n}
+                        </div>
+                      ))}
+                    </div>
+                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-white shrink-0 ${big ? "bg-orange-400" : "bg-blue-400"}`}>
+                      {big ? "B" : "S"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* My history tab */}
+        {historyTab === "my" && (
+          <div>
+            {myBetsLoading ? (
+              <div className="py-8 text-center text-gray-400 text-sm animate-pulse">Loading…</div>
+            ) : myBetsError && myBets.length === 0 ? (
+              <div className="py-8 text-center text-gray-400 text-sm px-4">{myBetsError}</div>
+            ) : myBets.length === 0 ? (
+              <div className="py-8 text-center text-gray-400 text-sm">No bet history</div>
+            ) : (
+              <div className="divide-y divide-gray-50">
+                {myBets.slice(0, 30).map((b, i) => {
+                  const p = String(b.period ?? b.issueNumber ?? b.no ?? "—");
+                  const sel = String(b.selectStr ?? b.number ?? b.selectNumber ?? b.betType ?? "—");
+                  const betAmtV = String(b.betAmount ?? b.amount ?? b.money ?? b.orderMoney ?? "—");
+                  const winAmtV = Number(b.winAmount ?? b.profit ?? b.award ?? b.winMoney ?? 0);
+                  const isWin = winAmtV > 0;
+                  const dt = String(b.createTime ?? b.addTime ?? b.time ?? b.date ?? "");
+                  return (
+                    <div key={i} className="px-4 py-3 flex items-center gap-3">
+                      <div className={`px-2.5 py-1 rounded-full text-xs font-semibold shrink-0 ${isWin ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-500"}`}>
+                        {isWin ? "Succeed" : "—"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-mono text-gray-500 truncate">{p}</div>
+                        {dt && <div className="text-[10px] text-gray-400 mt-0.5">{dt}</div>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-sm font-bold ${isWin ? "text-green-500" : "text-gray-600"}`}>
+                          {isWin ? `+K${winAmtV}` : `K${betAmtV}`}
+                        </div>
+                        <div className="text-[10px] text-gray-400">{sel}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Bet bottom sheet */}
+      {selectedBet && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedBet(null)} />
+          <div className="relative bg-white rounded-t-3xl px-5 pt-5 pb-8 space-y-4 shadow-2xl">
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 w-10 h-1 bg-gray-200 rounded-full" />
+            {/* Bet header */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="flex items-center gap-3">
+                <div className={`w-11 h-11 rounded-full ${getNumBallClass(Number(selectedBet.value))} flex items-center justify-center text-white font-bold text-lg shadow-md`}
+                  style={isNaN(Number(selectedBet.value)) ? {} : undefined}>
+                  {isNaN(Number(selectedBet.value))
+                    ? selectedBet.label.charAt(0)
+                    : selectedBet.value}
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400">Win Go {activeType.short}</div>
+                  <div className="font-bold text-gray-800 text-base">{selectedBet.label}</div>
+                </div>
+              </div>
+              <button type="button" onClick={() => setSelectedBet(null)} className="text-gray-400 text-2xl w-9 h-9 flex items-center justify-center rounded-full bg-gray-100">×</button>
+            </div>
+            {/* Balance */}
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-gray-500">Balance</span>
+              <span className="font-bold text-gray-800">K{balance}</span>
+            </div>
+            {/* Amount presets */}
+            <div>
+              <div className="text-xs text-gray-400 mb-2">Contract money (K)</div>
+              <div className="grid grid-cols-4 gap-2">
+                {[1, 5, 10, 20, 50, 100, 200, 500].map(p => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setBetAmt(String(p))}
+                    className={`py-2.5 rounded-xl text-xs font-semibold border-2 transition-colors ${Number(betAmt) === p ? "border-blue-500 bg-blue-50 text-blue-600" : "border-gray-200 text-gray-600 active:bg-gray-50"}`}
+                  >
+                    K{p}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Number of contracts */}
+            <div>
+              <div className="text-xs text-gray-400 mb-2">Number of contracts</div>
+              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {[1, 5, 10, 20, 50, 100].map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMultiplier(m)}
+                    className={`flex-shrink-0 px-4 py-2 rounded-xl border-2 text-xs font-semibold transition-colors ${multiplier === m ? "border-green-500 bg-green-50 text-green-600" : "border-gray-200 text-gray-500"}`}
+                  >
+                    X{m}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Total */}
+            <div className="bg-gray-50 rounded-xl px-4 py-3 flex justify-between items-center">
+              <span className="text-sm text-gray-600">Total bet</span>
+              <span className="text-lg font-bold text-gray-800">K{totalBet.toLocaleString()}</span>
+            </div>
+            {/* Buttons */}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => { setSelectedBet(null); setBetMsg(null); }}
+                className="py-4 rounded-2xl border-2 border-gray-200 text-gray-600 font-bold text-base active:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={betLoading || totalBet <= 0}
+                onClick={placeBet}
+                className={`py-4 rounded-2xl font-bold text-base text-white disabled:opacity-50 active:opacity-80 ${
+                  selectedBet.colorClass.startsWith("bg-green") ? "bg-green-500" :
+                  selectedBet.colorClass.startsWith("bg-red") ? "bg-red-500" :
+                  selectedBet.colorClass.startsWith("bg-violet") ? "bg-violet-500" :
+                  selectedBet.colorClass.startsWith("bg-orange") ? "bg-orange-400" :
+                  selectedBet.colorClass.includes("green") ? "bg-green-500" :
+                  "bg-blue-500"
+                }`}
+              >
+                {betLoading ? "Placing…" : `Confirm K${totalBet}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function ProfilePage({ session, initialUserInfo, onLogout, onUpdateSession }: ProfilePageProps) {
   const [page, setPage] = useState<Page>("home");
@@ -1861,6 +2472,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   }
 
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
+  if (page === "wingo") return <WinGoGamePage session={session} onBack={() => setPage("home")} />;
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
   if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} onLogout={onLogout} />;
