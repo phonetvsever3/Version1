@@ -38,7 +38,8 @@ function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
   const inner = d?.data ?? d;
   if (Array.isArray(inner)) return inner as Record<string, unknown>[];
   const data = inner as Record<string, unknown>;
-  const list = data?.list ?? data?.records ?? data?.items ?? data?.data;
+  // GetRechargeTypes uses "typelist"; other endpoints use list/records/items/data
+  const list = data?.typelist ?? data?.list ?? data?.records ?? data?.items ?? data?.data;
   return Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
 }
 
@@ -611,9 +612,11 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   function submit() {
     if (!selected || !amount || Number(amount) <= 0) return;
     setSubmitting(true); setSubmitError("");
+    // type: use payTypeId if present (from real typelist), else id
+    const typeId = Number(selected.payTypeId ?? selected.id);
     const payload: Record<string, unknown> = {
       amount: Number(amount),
-      type: Number(selected.id),
+      type: typeId,
       ReturnUrl: "https://www.cklottery.club/",
     };
     if (selected.code) payload.rechargeType = selected.code;
@@ -846,7 +849,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
                   : <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-lg">{m.emoji ?? "💳"}</div>
                 }
                 <div className="flex-1 text-left">
-                  <div className="text-sm font-semibold text-gray-800">{m.name}</div>
+                  <div className="text-sm font-semibold text-gray-800">{String(m.typeName ?? m.name ?? m.paySysName ?? m.id)}</div>
                   {(m.minMoney !== undefined || m.maxMoney !== undefined) && (
                     <div className="text-xs text-gray-400">
                       {m.minMoney !== undefined && `Min K${m.minMoney}`}
