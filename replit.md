@@ -13,7 +13,7 @@ A mobile-style web app that lets you view your CKLottery (cklottery.club) accoun
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
+- pnpm workspaces, Node.js 20, TypeScript 5.9
 - Frontend: React + Vite + Tailwind CSS (mobile-first)
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM

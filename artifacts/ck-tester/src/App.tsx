@@ -8,6 +8,7 @@ export interface UserSession {
   tokenHeader: string;
   refreshToken: string;
   cfClearance?: string;
+  userId?: string;
 }
 
 export default function App() {
