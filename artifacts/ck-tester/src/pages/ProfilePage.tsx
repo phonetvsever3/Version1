@@ -765,37 +765,55 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
 
   const PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
 
-  useEffect(() => {
-    apiPost("GetRechargeTypes", {}, session)
-      .then((d) => {
-        const list = extractList(d) as DepositMethod[];
-        if (list.length > 0) {
-          setMethods(list);
-          setSelected(list[0]);
-        } else {
-          setMethods(FALLBACK_METHODS);
-          setSelected(FALLBACK_METHODS[0]);
-          setUsingFallback(true);
-        }
-      })
-      .catch((e) => {
-        setMethodsError(String(e));
-        // Always show fallback methods even on error so the form stays usable
-        setMethods(FALLBACK_METHODS);
-        setSelected(FALLBACK_METHODS[0]);
-        setUsingFallback(true);
-      })
-      .finally(() => setMethodsLoading(false));
-  }, []);
+  // Always try proxy first for GetRechargeTypes — the direct call often fails with an
+  // API error (not a CORS error) and never retries via proxy, leaving us with stale fallback IDs.
+  async function loadMethods() {
+    setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
+    let list: DepositMethod[] = [];
+    // Try proxy first (server-side, more reliable)
+    try {
+      const d = await apiPostProxy("GetRechargeTypes", {}, session);
+      list = extractList(d) as DepositMethod[];
+    } catch {
+      // Proxy failed — try direct browser call
+      try {
+        const d = await apiPostDirect("GetRechargeTypes", {}, session);
+        list = extractList(d) as DepositMethod[];
+      } catch (e2) {
+        setMethodsError(String(e2));
+      }
+    }
+    if (list.length > 0) {
+      setMethods(list);
+      setSelected(list[0]);
+    } else {
+      // Show payment method buttons as visual hints only — block actual submission
+      setMethods(FALLBACK_METHODS);
+      setSelected(FALLBACK_METHODS[0]);
+      setUsingFallback(true);
+    }
+    setMethodsLoading(false);
+  }
+
+  useEffect(() => { loadMethods(); }, []);
 
   function submit() {
     if (!selected || !amount || Number(amount) <= 0) return;
+    // If we're using fallback (hardcoded) IDs, the server will reject them.
+    // Force the user to reload real methods first.
+    if (usingFallback) {
+      setSubmitError("Payment methods could not be loaded from the server. Tap the ↻ Reload button above to try again before depositing.");
+      return;
+    }
     setSubmitting(true); setSubmitError("");
-    // type: use id first (WavePay id=158 is what CreateRechargeOrder expects as "type"),
-    // then fall back to typeId, then payTypeId
-    const typeId = Number(selected.id ?? selected.typeId ?? selected.payTypeId ?? 0);
-    if (!typeId || typeId <= 0) {
-      setSubmitError("Could not determine payment type ID. Please tap Reload and select a payment method again.");
+    // Extract the type ID — try every known field name, take first positive integer
+    let typeId = 0;
+    for (const key of ["id", "typeId", "type", "payTypeId", "pid"]) {
+      const v = Number((selected as Record<string, unknown>)[key]);
+      if (Number.isFinite(v) && v > 0) { typeId = v; break; }
+    }
+    if (typeId <= 0) {
+      setSubmitError("Could not determine payment type ID. Tap ↻ Reload and select a method again.");
       setSubmitting(false);
       return;
     }
@@ -1015,22 +1033,17 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-semibold text-gray-700">Payment Method</div>
-          {usingFallback && (
-            <button type="button" onClick={() => {
-              setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
-              apiPost("GetRechargeTypes", {}, session)
-                .then((d) => {
-                  const list = extractList(d) as DepositMethod[];
-                  if (list.length > 0) { setMethods(list); setSelected(list[0]); }
-                  else { setMethods(FALLBACK_METHODS); setSelected(FALLBACK_METHODS[0]); setUsingFallback(true); }
-                })
-                .catch((e) => { setMethodsError(String(e)); setMethods(FALLBACK_METHODS); setSelected(prev => prev ?? FALLBACK_METHODS[0]); setUsingFallback(true); })
-                .finally(() => setMethodsLoading(false));
-            }} className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full active:opacity-70">
-              ↻ Reload
-            </button>
-          )}
+          <button type="button" onClick={loadMethods} disabled={methodsLoading}
+            className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full active:opacity-70 disabled:opacity-40">
+            ↻ Reload
+          </button>
         </div>
+        {usingFallback && (
+          <div className="bg-orange-50 border border-orange-200 rounded-xl px-3 py-2 mb-3 text-xs text-orange-800 flex items-start gap-2">
+            <span className="text-base shrink-0">⚠️</span>
+            <span>Payment methods could not be loaded from the server. Tap <strong>↻ Reload</strong> above — if it keeps failing, your token may have expired.</span>
+          </div>
+        )}
         {methodsLoading && <div className="text-center py-6 text-gray-400 text-sm">Loading methods…</div>}
         {!methodsLoading && methods.length > 0 && (
           <div className="space-y-2">
