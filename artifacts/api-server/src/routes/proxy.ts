@@ -37,18 +37,17 @@ function ckRandom(): string {
 
 function ckSign(body: Record<string, unknown>): Record<string, unknown> {
   const EXCLUDE = ["signature", "track", "xosoBettingData"];
-  // timestamp MUST be included before computing the signature
-  const enriched: Record<string, unknown> = {
+  // Add language and random — but NOT timestamp yet (CKLottery adds timestamp AFTER signing)
+  const withExtras: Record<string, unknown> = {
     ...body,
     language: body.language ?? 0,
     random: ckRandom(),
-    timestamp: Math.floor(Date.now() / 1000),
   };
 
   const sorted: Record<string, unknown> = {};
-  const keys = Object.keys(enriched).sort();
+  const keys = Object.keys(withExtras).sort();
   for (const k of keys) {
-    const v = enriched[k];
+    const v = withExtras[k];
     if (v !== null && v !== "" && !EXCLUDE.includes(k)) {
       sorted[k] = v;
     }
@@ -60,7 +59,8 @@ function ckSign(body: Record<string, unknown>): Record<string, unknown> {
     .toUpperCase()
     .slice(0, 32);
 
-  return { ...enriched, signature: sig };
+  // timestamp is added AFTER the signature (matches CKLottery's actual interceptor code)
+  return { ...withExtras, signature: sig, timestamp: Math.floor(Date.now() / 1000) };
 }
 
 // Safely parse JSON from a response, returning null if it's HTML/non-JSON (e.g. Cloudflare block)

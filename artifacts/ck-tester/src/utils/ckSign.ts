@@ -83,24 +83,25 @@ function ckRandom(): string {
 
 export function ckSign(body: Record<string, unknown>): Record<string, unknown> {
   const EXCLUDE = ["signature", "track", "xosoBettingData"];
-  const enriched: Record<string, unknown> = {
+  // Add language and random — but NOT timestamp yet (CKLottery adds timestamp AFTER signing)
+  const withExtras: Record<string, unknown> = {
     ...body,
     language: body.language ?? 0,
     random: ckRandom(),
-    timestamp: Math.floor(Date.now() / 1000),
   };
 
   const sorted: Record<string, unknown> = {};
-  const keys = Object.keys(enriched).sort();
+  const keys = Object.keys(withExtras).sort();
   for (const k of keys) {
-    const v = enriched[k];
+    const v = withExtras[k];
     if (v !== null && v !== "" && !EXCLUDE.includes(k)) {
       sorted[k] = v;
     }
   }
 
   const sig = md5(JSON.stringify(sorted)).toUpperCase().slice(0, 32);
-  return { ...enriched, signature: sig };
+  // timestamp is added AFTER the signature (matches CKLottery's actual interceptor code)
+  return { ...withExtras, signature: sig, timestamp: Math.floor(Date.now() / 1000) };
 }
 
 export const CK_API_BASE = "https://ckygjf6r.com/api/webapi";
