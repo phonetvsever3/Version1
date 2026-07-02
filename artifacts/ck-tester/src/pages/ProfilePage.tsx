@@ -1437,6 +1437,11 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .finally(() => setBalanceLoading(false));
   }, [session]);
 
+  // Refresh balance from server each time the add-balance page is opened
+  useEffect(() => {
+    if (page === "addBalance") refreshBalance();
+  }, [page]);
+
   useEffect(() => {
     // Always attempt API calls — the proxy will tell us if auth failed
     refreshBalance();
@@ -2356,6 +2361,26 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
     return (
       <SubPage title="➕ Add Balance" onBack={() => setPage("main")}>
+
+        {/* ── LIVE BALANCE (server) ── */}
+        <div className="bg-gradient-to-r from-blue-500 to-indigo-600 rounded-2xl p-4 mb-3 text-white flex items-center justify-between shadow">
+          <div>
+            <div className="text-xs opacity-75 mb-0.5">Current Balance (Server)</div>
+            {balanceLoading
+              ? <div className="text-2xl font-bold animate-pulse">Loading…</div>
+              : <div className="text-2xl font-bold">K{balance === "—" ? "—" : Number(balance).toLocaleString()}</div>
+            }
+            {balanceError && <div className="text-xs text-red-200 mt-0.5 truncate">{balanceError}</div>}
+          </div>
+          <button
+            type="button"
+            onClick={refreshBalance}
+            disabled={balanceLoading}
+            className="bg-white/20 hover:bg-white/30 disabled:opacity-50 text-white text-xs font-bold px-3 py-2 rounded-xl active:opacity-70"
+          >
+            <span className={balanceLoading ? "animate-spin inline-block" : ""}>↻</span>
+          </button>
+        </div>
 
         {/* ── SCANNER ── */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
