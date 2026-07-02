@@ -6,6 +6,7 @@ interface ProfilePageProps {
   session: UserSession;
   initialUserInfo: Record<string, unknown> | null;
   onLogout: () => void;
+  onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
 type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction";
@@ -23,13 +24,27 @@ async function apiPost(path: string, body: unknown, session: UserSession): Promi
       Accept: "application/json",
       Authorization: auth,
       "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+      ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
     },
     body: JSON.stringify(body ?? {}),
   });
   const text = await res.text();
-  const json = JSON.parse(text) as Record<string, unknown>;
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`Server returned non-JSON response (HTTP ${res.status})`);
+  }
+  // Detect proxy-level errors (Cloudflare block, network failure)
+  if (json.error === "cloudflare_blocked") {
+    throw new Error("Proxy blocked by Cloudflare. Paste your cf_clearance cookie below to fix this, or refresh your token from cklottery.club.");
+  }
+  if (typeof json.error === "string" && json.code === undefined) {
+    throw new Error(json.error as string);
+  }
+  // API-level error codes (0 = success on most CKLottery endpoints)
   if (json.code !== 0 && json.code !== 200 && json.code !== undefined) {
-    throw new Error(String(json.msg || json.message || `Code ${json.code}`));
+    throw new Error(String(json.msg || json.message || `API error code ${json.code}`));
   }
   return json;
 }
@@ -94,23 +109,77 @@ function StatusBadge({ status, str }: { status: unknown; str: unknown }) {
   return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>{String(label)}</span>;
 }
 
+// ─── Cloudflare helpers ───────────────────────────────────────────────────────
+function isCfError(err: string) {
+  return err.toLowerCase().includes("cloudflare") || err.toLowerCase().includes("proxy blocked") || err.toLowerCase().includes("cf_clearance");
+}
+
+function CloudflareFixPanel({ onFix }: { onFix: (val: string) => void }) {
+  const [val, setVal] = useState("");
+  return (
+    <div className="mx-0 mt-3 bg-amber-50 border border-amber-200 rounded-2xl p-4">
+      <div className="flex items-start gap-2 mb-3">
+        <span className="text-xl shrink-0">🛡️</span>
+        <div>
+          <div className="text-amber-800 font-semibold text-sm">Cloudflare is blocking data</div>
+          <div className="text-amber-700 text-xs mt-0.5 leading-relaxed">
+            Paste your <code className="bg-amber-100 px-1 rounded text-[10px]">cf_clearance</code> cookie to bypass it.
+          </div>
+        </div>
+      </div>
+      <div className="bg-amber-100/60 rounded-xl p-3 mb-3 text-xs text-amber-900 leading-relaxed">
+        <strong>How to get it:</strong><br />
+        1. Open <strong>cklottery.club</strong> in your browser<br />
+        2. Press <strong>F12</strong> → Application → Cookies<br />
+        3. Find <code className="bg-white px-1 rounded">cf_clearance</code> under <em>ckygjf6r.com</em><br />
+        4. Copy the <strong>Value</strong> and paste below
+      </div>
+      <input
+        type="text"
+        placeholder="Paste cf_clearance value here…"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        className="w-full border border-amber-300 rounded-xl px-3 py-2.5 text-xs text-gray-800 bg-white focus:outline-none focus:border-amber-500 mb-2 font-mono"
+      />
+      <button
+        type="button"
+        disabled={!val.trim()}
+        onClick={() => onFix(val.trim())}
+        className="w-full bg-amber-500 text-white font-bold py-2.5 rounded-xl text-sm disabled:opacity-40 active:opacity-80"
+      >
+        Apply &amp; Retry
+      </button>
+    </div>
+  );
+}
+
 // ─── Empty/Error state ────────────────────────────────────────────────────────
-function ListState({ loading, error, empty }: { loading: boolean; error: string; empty: boolean }) {
+function ListState({ loading, error, empty, onCfFix, onRetry }: { loading: boolean; error: string; empty: boolean; onCfFix?: (val: string) => void; onRetry?: () => void }) {
   if (loading) return (
     <div className="flex flex-col items-center py-16 text-gray-400">
       <div className="text-4xl mb-3 animate-spin">⟳</div>
       <p className="text-sm">Loading...</p>
     </div>
   );
-  if (error) return (
-    <div className="flex flex-col items-center py-12 text-center px-4">
-      <div className="text-4xl mb-3">{error.toLowerCase().includes("expir") || error.toLowerCase().includes("token") || error.toLowerCase().includes("login") ? "⚠️" : "🔒"}</div>
-      <p className="text-sm font-semibold text-orange-500 mb-1">
-        {error.toLowerCase().includes("expir") || error.toLowerCase().includes("token") ? "Token Expired" : "API Error"}
-      </p>
-      <p className="text-xs text-gray-400">{error}</p>
-    </div>
-  );
+  if (error) {
+    const isCf = isCfError(error);
+    const isToken = error.toLowerCase().includes("expir") || error.toLowerCase().includes("token") || error.toLowerCase().includes("login");
+    return (
+      <div className="flex flex-col items-center py-8 text-center px-4 w-full">
+        <div className="text-4xl mb-3">{isCf ? "🛡️" : isToken ? "⚠️" : "🔒"}</div>
+        <p className="text-sm font-semibold text-orange-500 mb-1">
+          {isCf ? "Cloudflare Blocked" : isToken ? "Token Expired" : "API Error"}
+        </p>
+        <p className="text-xs text-gray-400 mb-3">{error}</p>
+        {onRetry && !isCf && (
+          <button type="button" onClick={onRetry} className="text-xs bg-blue-50 text-blue-500 px-4 py-2 rounded-xl font-medium active:opacity-70">
+            ↻ Retry
+          </button>
+        )}
+        {isCf && onCfFix && <CloudflareFixPanel onFix={onCfFix} />}
+      </div>
+    );
+  }
   if (empty) return (
     <div className="flex flex-col items-center py-16 text-gray-400">
       <div className="text-4xl mb-3">📭</div>
@@ -934,7 +1003,7 @@ function InfoRow({ label, value, copyable = false }: { label: string; value: str
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
-export default function ProfilePage({ session, initialUserInfo, onLogout }: ProfilePageProps) {
+export default function ProfilePage({ session, initialUserInfo, onLogout, onUpdateSession }: ProfilePageProps) {
   const [page, setPage] = useState<Page>("home");
   const [userInfo, setUserInfo] = useState<Record<string, unknown> | null>(null);
   const [vipData, setVipData] = useState<Record<string, unknown> | null>(null);
@@ -956,6 +1025,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
   const [transactionsError, setTransactionsError] = useState("");
   const [wingoResults, setWingoResults] = useState<Record<string, unknown>[]>([]);
   const [wingoLoading, setWingoLoading] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const claims = initialUserInfo?._jwtClaims as Record<string, unknown> | null;
 
@@ -1041,6 +1111,24 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
       .finally(() => setTransactionsLoading(false));
   }, [session]);
 
+  function handleCfFix(cfVal: string) {
+    onUpdateSession({ cfClearance: cfVal });
+    // Reset all data so it reloads with the new cf_clearance
+    setDepositsError(""); setWithdrawsError(""); setGamesError(""); setTransactionsError(""); setWalletsError("");
+    setDeposits([]); setWithdraws([]); setGames([]); setTransactions([]); setWallets(null);
+    setReloadKey((k) => k + 1);
+  }
+
+  // When reloadKey increments (after CF fix), reload data for the active page
+  useEffect(() => {
+    if (reloadKey === 0) return;
+    if (page === "deposit") loadDeposits();
+    if (page === "withdraw") loadWithdraws();
+    if (page === "game") loadGames();
+    if (page === "transaction") loadTransactions();
+    if (page === "wallet") loadWallets();
+  }, [reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function navTo(p: Page) {
     if (p === "wallet" && !wallets && !walletsLoading) loadWallets();
     if (p === "deposit" && deposits.length === 0 && !depositsLoading) loadDeposits();
@@ -1070,7 +1158,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
         <span className="text-2xl">›</span>
       </button>
       <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 px-1">Deposit History</div>
-      <ListState loading={depositsLoading} error={depositsError} empty={!depositsLoading && !depositsError && deposits.length === 0} />
+      <ListState loading={depositsLoading} error={depositsError} empty={!depositsLoading && !depositsError && deposits.length === 0} onCfFix={handleCfFix} onRetry={loadDeposits} />
       {!depositsLoading && !depositsError && deposits.length > 0 && (
         <div className="space-y-3">
           {deposits.map((item, i) => {
@@ -1102,7 +1190,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
 
   if (page === "withdraw") return (
     <SubPage title="📤 Withdraw History" onBack={() => setPage("main")}>
-      <ListState loading={withdrawsLoading} error={withdrawsError} empty={!withdrawsLoading && !withdrawsError && withdraws.length === 0} />
+      <ListState loading={withdrawsLoading} error={withdrawsError} empty={!withdrawsLoading && !withdrawsError && withdraws.length === 0} onCfFix={handleCfFix} onRetry={loadWithdraws} />
       {!withdrawsLoading && !withdrawsError && withdraws.length > 0 && (
         <div className="space-y-3">
           {withdraws.map((item, i) => {
@@ -1134,7 +1222,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
 
   if (page === "game") return (
     <SubPage title="🎮 Game History" onBack={() => setPage("main")}>
-      <ListState loading={gamesLoading} error={gamesError} empty={!gamesLoading && !gamesError && games.length === 0} />
+      <ListState loading={gamesLoading} error={gamesError} empty={!gamesLoading && !gamesError && games.length === 0} onCfFix={handleCfFix} onRetry={loadGames} />
       {!gamesLoading && !gamesError && games.length > 0 && (
         <div className="space-y-3">
           {games.map((item, i) => (
@@ -1158,7 +1246,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout }: Prof
 
   if (page === "transaction") return (
     <SubPage title="💸 Transaction History" onBack={() => setPage("main")}>
-      <ListState loading={transactionsLoading} error={transactionsError} empty={!transactionsLoading && !transactionsError && transactions.length === 0} />
+      <ListState loading={transactionsLoading} error={transactionsError} empty={!transactionsLoading && !transactionsError && transactions.length === 0} onCfFix={handleCfFix} onRetry={loadTransactions} />
       {!transactionsLoading && !transactionsError && transactions.length > 0 && (
         <div className="space-y-3">
           {transactions.map((item, i) => (
