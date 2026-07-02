@@ -966,27 +966,33 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       </div>
 
       {/* Extra fields: payer name + remark */}
-      <div className="bg-white rounded-2xl shadow-sm p-5 mb-3 space-y-3">
+      <div className="bg-white rounded-2xl shadow-sm p-5 mb-3 space-y-4">
         <div className="text-sm font-semibold text-gray-700">Your Details</div>
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Your Name (optional)</label>
+          <label className="text-xs text-gray-500 mb-1 block font-medium">Your Name <span className="text-gray-400">(optional)</span></label>
           <input
             type="text"
-            placeholder="Name on your bank / wallet account"
+            placeholder="e.g. Ko Aung, Ma May"
             value={payerName}
             onChange={(e) => setPayerName(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
           />
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            ✏️ Enter the <strong>account holder name</strong> on your Wave Pay / KBZ / AYA / CB Pay account. Leave blank if you don't know.
+          </p>
         </div>
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Remark / Note (optional)</label>
+          <label className="text-xs text-gray-500 mb-1 block font-medium">Remark / Note <span className="text-gray-400">(optional)</span></label>
           <input
             type="text"
-            placeholder="e.g. Top up, Wave transfer…"
+            placeholder="e.g. Top up"
             value={remark}
             onChange={(e) => setRemark(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50"
           />
+          <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+            📝 A short note to attach to your transfer — just type <strong>Top up</strong> or leave it blank. This is sent with your deposit.
+          </p>
         </div>
       </div>
 
