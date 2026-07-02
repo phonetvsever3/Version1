@@ -12,12 +12,11 @@ function buildAuth(s: UserSession) {
 }
 
 async function ckPost(ep: string, body: Record<string, unknown>, session: UserSession): Promise<Record<string, unknown>> {
-  const auth = buildAuth(session);
   const res = await fetch(`/api/proxy/ck/${ep}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: auth,
+      Authorization: buildAuth(session),
       "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
       ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
     },
@@ -27,31 +26,64 @@ async function ckPost(ep: string, body: Record<string, unknown>, session: UserSe
   try { return JSON.parse(text) as Record<string, unknown>; } catch { return { error: "non-json" }; }
 }
 
+const URL_NOT_EXIST_MSGS = [
+  "url is not exist", "url not exist", "not exist", "not found",
+  "no route", "no such", "invalid url", "no_route", "url_not_exist",
+];
+
+function isUrlNotExist(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return URL_NOT_EXIST_MSGS.some(p => m.includes(p));
+}
+
+function isApiOk(res: Record<string, unknown>): boolean {
+  const code = res.code ?? res.Code;
+  const msg = String(res.msg ?? res.message ?? res.error ?? "");
+  if (isUrlNotExist(msg)) return false;
+  if (typeof res.error === "string" && res.error !== "" && res.error !== "non-json") return false;
+  if (code === undefined) return true;
+  return code === 0 || code === 200 || code === "0";
+}
+
+async function tryEndpoints(
+  candidates: Array<{ ep: string; body?: Record<string, unknown> }>,
+  session: UserSession,
+): Promise<{ res: Record<string, unknown>; ep: string } | null> {
+  for (const { ep, body = {} } of candidates) {
+    try {
+      const res = await ckPost(ep, body, session);
+      if (isApiOk(res)) return { res, ep };
+    } catch { /* continue */ }
+  }
+  return null;
+}
+
 function extractData(d: Record<string, unknown>): Record<string, unknown> {
-  return ((d?.data ?? d) as Record<string, unknown>) ?? {};
+  const src = (d?.data ?? d) as Record<string, unknown>;
+  return src ?? {};
 }
 
 function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
   const src = extractData(d);
-  for (const key of ["list", "records", "items", "data", "result", "content", "rechargetypelist", "bankCardList"]) {
+  for (const key of ["list", "records", "items", "data", "result", "content",
+    "rechargetypelist", "bankCardList", "noticeList", "activityList",
+    "rows", "pageData", "dataList", "vipList", "memberList"]) {
     if (Array.isArray(src[key])) return src[key] as Record<string, unknown>[];
   }
   if (Array.isArray(d.data)) return d.data as Record<string, unknown>[];
+  if (Array.isArray(src)) return src as Record<string, unknown>[];
   return [];
 }
 
+function pick(...vals: unknown[]): unknown {
+  for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
+  return undefined;
+}
+
 type Status = "idle" | "loading" | "ok" | "error";
+interface DataBlock { status: Status; data: unknown; error: string; ep?: string; }
 
-interface DataBlock {
-  status: Status;
-  data: unknown;
-  error: string;
-}
-
-function Spin() {
-  return <span className="inline-block animate-spin text-blue-400">⟳</span>;
-}
-
+function Spin() { return <span className="inline-block animate-spin text-blue-400">⟳</span>; }
 function Tag({ ok }: { ok: boolean }) {
   return (
     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ml-2 ${ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-500"}`}>
@@ -59,13 +91,17 @@ function Tag({ ok }: { ok: boolean }) {
     </span>
   );
 }
-
-function SectionCard({ title, icon, status, children }: { title: string; icon: string; status: Status; children: React.ReactNode }) {
+function SectionCard({ title, icon, status, epName, children }: {
+  title: string; icon: string; status: Status; epName?: string; children: React.ReactNode;
+}) {
   return (
     <div className="bg-white rounded-2xl shadow-sm mb-3 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-50 flex items-center gap-2">
         <span className="text-lg">{icon}</span>
-        <span className="font-bold text-gray-800 text-sm flex-1">{title}</span>
+        <div className="flex-1 min-w-0">
+          <span className="font-bold text-gray-800 text-sm">{title}</span>
+          {epName && <span className="ml-2 text-[10px] text-gray-400 font-mono">{epName}</span>}
+        </div>
         {status === "loading" && <Spin />}
         {status === "ok" && <Tag ok />}
         {status === "error" && <Tag ok={false} />}
@@ -74,167 +110,287 @@ function SectionCard({ title, icon, status, children }: { title: string; icon: s
     </div>
   );
 }
-
 function KV({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null || value === "") return null;
   const str = typeof value === "object" ? JSON.stringify(value) : String(value);
   return (
     <div className="flex justify-between items-start gap-2 py-1 border-b border-gray-50 last:border-0">
       <span className="text-xs text-gray-400 shrink-0">{label}</span>
-      <span className="text-xs text-gray-800 font-medium text-right break-all max-w-[55%]">{str}</span>
+      <span className="text-xs text-gray-800 font-medium text-right break-all max-w-[58%]">{str}</span>
     </div>
   );
 }
-
-function RecordRow({ item }: { item: Record<string, unknown> }) {
-  const entries = Object.entries(item).filter(([k]) => !k.startsWith("_")).slice(0, 6);
-  return (
-    <div className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
-      {entries.map(([k, v]) => <KV key={k} label={k} value={v} />)}
-    </div>
-  );
-}
-
 function EmptyState({ msg }: { msg: string }) {
   return <p className="text-xs text-gray-400 italic text-center py-3">{msg}</p>;
 }
 
 export default function ApiCenterPage({ session, onBack }: Props) {
   const claims = decodeJwt(session.token);
+  const init = (): DataBlock => ({ status: "idle", data: null, error: "" });
 
-  const initBlock = (): DataBlock => ({ status: "idle", data: null, error: "" });
+  const [userInfo,       setUserInfo]       = useState<DataBlock>(init());
+  const [vipInfo,        setVipInfo]        = useState<DataBlock>(init());
+  const [vipList,        setVipList]        = useState<DataBlock>(init());
+  const [wallets,        setWallets]        = useState<DataBlock>(init());
+  const [bankCards,      setBankCards]      = useState<DataBlock>(init());
+  const [deposits,       setDeposits]       = useState<DataBlock>(init());
+  const [withdraws,      setWithdraws]      = useState<DataBlock>(init());
+  const [withdrawInfo,   setWithdrawInfo]   = useState<DataBlock>(init());
+  const [payMethods,     setPayMethods]     = useState<DataBlock>(init());
+  const [bets,           setBets]           = useState<DataBlock>(init());
+  const [transactions,   setTransactions]   = useState<DataBlock>(init());
+  const [wingo,          setWingo]          = useState<DataBlock>(init());
+  const [invite,         setInvite]         = useState<DataBlock>(init());
+  const [agent,          setAgent]          = useState<DataBlock>(init());
+  const [team,           setTeam]           = useState<DataBlock>(init());
+  const [rebate,         setRebate]         = useState<DataBlock>(init());
+  const [safe,           setSafe]           = useState<DataBlock>(init());
+  const [signInfo,       setSignInfo]       = useState<DataBlock>(init());
+  const [notices,        setNotices]        = useState<DataBlock>(init());
+  const [activities,     setActivities]     = useState<DataBlock>(init());
 
-  const [userInfo, setUserInfo] = useState<DataBlock>(initBlock());
-  const [vipInfo, setVipInfo] = useState<DataBlock>(initBlock());
-  const [vipList, setVipList] = useState<DataBlock>(initBlock());
-  const [wallets, setWallets] = useState<DataBlock>(initBlock());
-  const [bankCards, setBankCards] = useState<DataBlock>(initBlock());
-  const [deposits, setDeposits] = useState<DataBlock>(initBlock());
-  const [withdraws, setWithdraws] = useState<DataBlock>(initBlock());
-  const [bets, setBets] = useState<DataBlock>(initBlock());
-  const [transactions, setTransactions] = useState<DataBlock>(initBlock());
-  const [invite, setInvite] = useState<DataBlock>(initBlock());
-  const [agent, setAgent] = useState<DataBlock>(initBlock());
-  const [safe, setSafe] = useState<DataBlock>(initBlock());
-  const [signInfo, setSignInfo] = useState<DataBlock>(initBlock());
-  const [notice, setNotice] = useState<DataBlock>(initBlock());
-  const [activity, setActivity] = useState<DataBlock>(initBlock());
-  const [rebate, setRebate] = useState<DataBlock>(initBlock());
-  const [team, setTeam] = useState<DataBlock>(initBlock());
-  const [wingoHistory, setWingoHistory] = useState<DataBlock>(initBlock());
-  const [withdrawInfo, setWithdrawInfo] = useState<DataBlock>(initBlock());
-  const [rechargeTypes, setRechargeTypes] = useState<DataBlock>(initBlock());
+  const [totalApis,      setTotalApis]      = useState(0);
+  const [successApis,    setSuccessApis]    = useState(0);
+  const [totalPoints,    setTotalPoints]    = useState(0);
 
-  const [totalApis, setTotalApis] = useState(0);
-  const [successApis, setSuccessApis] = useState(0);
-  const [totalDataPoints, setTotalDataPoints] = useState(0);
+  const [rawEp,    setRawEp]    = useState("");
+  const [rawBody,  setRawBody]  = useState("{}");
+  const [rawBlock, setRawBlock] = useState<DataBlock>(init());
+  const [copied,   setCopied]   = useState(false);
 
-  const [rawEp, setRawEp] = useState("");
-  const [rawBody, setRawBody] = useState("{}");
-  const [rawResult, setRawResult] = useState<DataBlock>(initBlock());
-  const [copiedRaw, setCopiedRaw] = useState(false);
-
-  const fetch1 = useCallback(async (
-    ep: string,
-    body: Record<string, unknown>,
+  const settle = useCallback((
     setter: (b: DataBlock) => void,
-    countPoints: (d: unknown) => number = () => 1,
+    result: { res: Record<string, unknown>; ep: string } | null,
+    pts: (d: Record<string, unknown>) => number,
   ) => {
-    setter({ status: "loading", data: null, error: "" });
-    try {
-      const res = await ckPost(ep, body, session);
-      const err = res?.error ?? res?.Error;
-      const code = res?.code ?? res?.Code;
-      const isErr = typeof err === "string" && err !== "" && err !== "undefined";
-      const badCode = code !== undefined && code !== 0 && code !== 200 && code !== "0";
-      if (isErr || badCode) {
-        const msg = String(res?.msg ?? res?.message ?? err ?? `code ${code}`);
-        setter({ status: "error", data: res, error: msg });
-        setTotalApis(n => n + 1);
-      } else {
-        const pts = countPoints(res);
-        setter({ status: "ok", data: res, error: "" });
-        setTotalApis(n => n + 1);
-        setSuccessApis(n => n + 1);
-        setTotalDataPoints(n => n + pts);
-      }
-    } catch (e) {
-      setter({ status: "error", data: null, error: String(e) });
-      setTotalApis(n => n + 1);
+    setTotalApis(n => n + 1);
+    if (result) {
+      setter({ status: "ok", data: result.res, error: "", ep: result.ep });
+      setSuccessApis(n => n + 1);
+      setTotalPoints(n => n + pts(result.res));
+    } else {
+      setter({ status: "error", data: null, error: "Url is not exist" });
     }
-  }, [session]);
+  }, []);
 
   const loadAll = useCallback(() => {
-    setTotalApis(0); setSuccessApis(0); setTotalDataPoints(0);
+    setTotalApis(0); setSuccessApis(0); setTotalPoints(0);
+    const ALL = 20;
+    [setUserInfo, setVipInfo, setVipList, setWallets, setBankCards, setDeposits,
+      setWithdraws, setWithdrawInfo, setPayMethods, setBets, setTransactions,
+      setWingo, setInvite, setAgent, setTeam, setRebate, setSafe, setSignInfo,
+      setNotices, setActivities].forEach(s => s({ status: "loading", data: null, error: "" }));
 
-    fetch1("GetUserInfo", {}, setUserInfo, (d) => {
-      const data = extractData(d as Record<string, unknown>);
-      return Object.keys(data).length;
-    });
-    fetch1("GetVipUserLevelDetail", {}, setVipInfo, () => 5);
-    fetch1("GetVipList", {}, setVipList, (d) => extractList(d as Record<string, unknown>).length + 1);
-    fetch1("GetAllwallets", {}, setWallets, (d) => Object.keys(extractData(d as Record<string, unknown>)).length);
-    fetch1("GetBankCard", {}, setBankCards, (d) => extractList(d as Record<string, unknown>).length + 1);
-    fetch1("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, setDeposits, (d) => extractList(d as Record<string, unknown>).length);
-    fetch1("GetWithdrawLog", { pageIndex: 1, pageSize: 20 }, setWithdraws, (d) => extractList(d as Record<string, unknown>).length);
-    fetch1("BetRecords", { pageIndex: 1, pageSize: 20 }, setBets, (d) => extractList(d as Record<string, unknown>).length);
-    fetch1("RecordList", { pageIndex: 1, pageSize: 20 }, setTransactions, (d) => extractList(d as Record<string, unknown>).length);
-    fetch1("GetInviteInfo", {}, setInvite, () => 5);
-    fetch1("GetAgentInfo", {}, setAgent, () => 5);
-    fetch1("GetSafeInfo", {}, setSafe, () => 3);
-    fetch1("GetSignInfo", {}, setSignInfo, () => 3);
-    fetch1("GetNotice", { pageIndex: 1, pageSize: 10 }, setNotice, (d) => extractList(d as Record<string, unknown>).length + 1);
-    fetch1("GetActivityList", { pageIndex: 1, pageSize: 10 }, setActivity, (d) => extractList(d as Record<string, unknown>).length + 1);
-    fetch1("GetRebateInfo", {}, setRebate, () => 4);
-    fetch1("GetTeamInfo", {}, setTeam, () => 5);
-    fetch1("GetEmerdList", { typeId: 1 }, setWingoHistory, (d) => extractList(d as Record<string, unknown>).length);
-    fetch1("GetWithdrawInfo", {}, setWithdrawInfo, () => 4);
-    fetch1("GetRechargeTypes", {}, setRechargeTypes, (d) => extractList(d as Record<string, unknown>).length + 1);
-  }, [fetch1]);
+    const run = async (
+      candidates: Array<{ ep: string; body?: Record<string, unknown> }>,
+      setter: (b: DataBlock) => void,
+      pts: (d: Record<string, unknown>) => number = () => 1,
+    ) => settle(setter, await tryEndpoints(candidates, session), pts);
+
+    // 1 User Info
+    run([{ ep: "GetUserInfo" }], setUserInfo,
+      d => Object.keys(extractData(d)).length);
+
+    // 2 VIP Status
+    run([{ ep: "GetVipUserLevelDetail" }, { ep: "GetVipDetail" }, { ep: "GetUserVipInfo" }, { ep: "GetVipUserDetail" }], setVipInfo, () => 5);
+
+    // 3 All VIP Levels
+    run([
+      { ep: "GetVipList" }, { ep: "VipList" }, { ep: "GetVipGradeList" },
+      { ep: "GetVipLevelList" }, { ep: "GetVipGrade" }, { ep: "GetVipLevel" },
+      { ep: "GetAllVipList" }, { ep: "GetVipLevelConfig" },
+    ], setVipList, d => extractList(d).length + 1);
+
+    // 4 Wallets
+    run([{ ep: "GetAllwallets" }, { ep: "GetWallet" }, { ep: "GetUserWallet" }, { ep: "GetWalletInfo" }], setWallets,
+      d => Object.keys(extractData(d)).length);
+
+    // 5 Bank Cards
+    run([
+      { ep: "GetBankCard" }, { ep: "GetBankCardList" }, { ep: "BankCardList" },
+      { ep: "GetUserBankCard" }, { ep: "GetMemberBankCard" }, { ep: "GetUserCardInfo" },
+      { ep: "GetCardInfo" }, { ep: "GetBankInfo" },
+    ], setBankCards, d => extractList(d).length + 1);
+
+    // 6 Deposits
+    run([
+      { ep: "GetRechargeRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "RechargeRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetRechargeLogs", body: { pageIndex: 1, pageSize: 20 } },
+    ], setDeposits, d => extractList(d).length);
+
+    // 7 Withdrawals
+    run([
+      { ep: "GetWithdrawLog", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetWithdrawRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "WithdrawLog", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetWithdrawHistory", body: { pageIndex: 1, pageSize: 20 } },
+    ], setWithdraws, d => extractList(d).length);
+
+    // 8 Withdrawal Limits
+    run([
+      { ep: "GetWithdrawInfo" }, { ep: "GetWithdrawConfig" }, { ep: "GetWithdrawLimit" },
+      { ep: "WithdrawConfig" }, { ep: "GetWithdrawSetting" }, { ep: "GetWithdrawType" },
+      { ep: "GetWithdrawRule" }, { ep: "GetWithdrawData" },
+    ], setWithdrawInfo, () => 4);
+
+    // 9 Payment Methods
+    run([
+      { ep: "GetRechargeTypes", body: { payid: 1 } },
+      { ep: "GetRechargeTypes", body: { payid: 0 } },
+      { ep: "GetPayTypes" }, { ep: "GetPayMethod" }, { ep: "GetRechargeMethods" },
+      { ep: "GetRechargeMethod" }, { ep: "GetPayChannel" }, { ep: "GetPaymentMethod" },
+      { ep: "GetRechargeChannelList" }, { ep: "GetRechargeType" },
+    ], setPayMethods, d => extractList(d).length + 1);
+
+    // 10 Bet / Game Records
+    run([
+      { ep: "BetRecords", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "BettingRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetBettingRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetBetRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetGameRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "WinGoRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetWingoRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetLotteryRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetOrderRecord", body: { pageIndex: 1, pageSize: 20, gameType: 1 } },
+    ], setBets, d => extractList(d).length);
+
+    // 11 Balance Transactions
+    run([
+      { ep: "RecordList", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "AllRecords", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetRecordList", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetTransferRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetAllRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetChangeRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "ChangeRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetBalanceRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetFundRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetFinanceRecord", body: { pageIndex: 1, pageSize: 20 } },
+    ], setTransactions, d => extractList(d).length);
+
+    // 12 WinGo results
+    run([
+      { ep: "GetEmerdList", body: { typeId: 1 } },
+      { ep: "GetWinGoList", body: { typeId: 1 } },
+      { ep: "GetColorList", body: { typeId: 1 } },
+      { ep: "GetLotteryList", body: { typeId: 1 } },
+    ], setWingo, d => extractList(d).length);
+
+    // 13 Invite / Referral
+    run([
+      { ep: "GetInviteInfo" }, { ep: "GetInvite" }, { ep: "InviteInfo" },
+      { ep: "GetUserInvite" }, { ep: "GetInviteCode" }, { ep: "GetInviteList" },
+      { ep: "GetReferralInfo" }, { ep: "GetShareInfo" }, { ep: "GetPromoteInfo" },
+    ], setInvite, () => 5);
+
+    // 14 Agent
+    run([
+      { ep: "GetAgentInfo" }, { ep: "GetAgent" }, { ep: "AgentInfo" },
+      { ep: "GetUserAgent" }, { ep: "GetAgentData" }, { ep: "GetAgentDetail" },
+    ], setAgent, () => 5);
+
+    // 15 Team
+    run([
+      { ep: "GetTeamInfo" }, { ep: "GetTeam" }, { ep: "TeamInfo" },
+      { ep: "GetUserTeam" }, { ep: "GetTeamMember" }, { ep: "GetTeamData" },
+      { ep: "GetSubordinateInfo" }, { ep: "GetMemberList", body: { pageIndex: 1, pageSize: 10 } },
+    ], setTeam, () => 5);
+
+    // 16 Rebate
+    run([
+      { ep: "GetRebateInfo" }, { ep: "GetRebate" }, { ep: "RebateInfo" },
+      { ep: "GetUserRebate" }, { ep: "GetRebateData" }, { ep: "GetCashbackInfo" },
+      { ep: "GetCommissionInfo" }, { ep: "GetCommission" },
+    ], setRebate, () => 4);
+
+    // 17 Safe
+    run([
+      { ep: "GetSafeInfo" }, { ep: "GetSafe" }, { ep: "SafeInfo" },
+      { ep: "GetUserSafe" }, { ep: "GetSafeData" }, { ep: "GetVault" },
+    ], setSafe, () => 3);
+
+    // 18 Sign-in
+    run([
+      { ep: "GetSignInfo" }, { ep: "GetSign" }, { ep: "SignInfo" },
+      { ep: "GetDailySign" }, { ep: "GetSignRecord" }, { ep: "CheckSign" },
+      { ep: "GetAttendance" }, { ep: "GetCheckIn" }, { ep: "GetSignInInfo" },
+      { ep: "GetSignStatus" },
+    ], setSignInfo, () => 3);
+
+    // 19 Notices
+    run([
+      { ep: "GetNotice", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetNoticeList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "NoticeList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetAnnouncementList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetBroadcast", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetAnnouncement", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetMessage", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetMessageList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetSysNotice", body: { pageIndex: 1, pageSize: 10 } },
+    ], setNotices, d => extractList(d).length + 1);
+
+    // 20 Activities
+    run([
+      { ep: "GetActivityList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetActivity", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "ActivityList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetPromotion", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetPromotionList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetActiveList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetEventList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetBonusList", body: { pageIndex: 1, pageSize: 10 } },
+    ], setActivities, d => extractList(d).length + 1);
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void ALL;
+  }, [session, settle]);
 
   useEffect(() => { loadAll(); }, []);
 
   async function runRaw() {
     if (!rawEp.trim()) return;
-    setRawResult({ status: "loading", data: null, error: "" });
+    setRawBlock({ status: "loading", data: null, error: "" });
     let body: Record<string, unknown> = {};
     try { body = JSON.parse(rawBody); } catch { body = {}; }
     try {
       const res = await ckPost(rawEp.trim(), body, session);
-      setRawResult({ status: "ok", data: res, error: "" });
+      setRawBlock({ status: "ok", data: res, error: "" });
     } catch (e) {
-      setRawResult({ status: "error", data: null, error: String(e) });
+      setRawBlock({ status: "error", data: null, error: String(e) });
     }
   }
 
   function copyRaw() {
-    const str = JSON.stringify(rawResult.data, null, 2);
-    navigator.clipboard.writeText(str).then(() => { setCopiedRaw(true); setTimeout(() => setCopiedRaw(false), 2000); }).catch(() => {});
+    navigator.clipboard.writeText(JSON.stringify(rawBlock.data, null, 2))
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
   }
 
-  const allLoaded = [userInfo, vipInfo, vipList, wallets, bankCards, deposits, withdraws, bets, transactions, invite, agent, safe, signInfo, notice, activity, rebate, team, wingoHistory, withdrawInfo, rechargeTypes].every(b => b.status !== "loading");
+  const allDone = [userInfo, vipInfo, vipList, wallets, bankCards, deposits,
+    withdraws, withdrawInfo, payMethods, bets, transactions, wingo,
+    invite, agent, team, rebate, safe, signInfo, notices, activities
+  ].every(b => b.status !== "loading");
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col pb-20">
+    <div className="min-h-screen bg-gray-100 flex flex-col pb-24">
       {/* Header */}
       <div className="bg-gradient-to-r from-indigo-600 to-blue-500 px-4 pt-12 pb-5 flex items-center gap-3">
-        <button onClick={onBack} className="text-white text-3xl leading-none w-8 flex-shrink-0">‹</button>
+        <button onClick={onBack} className="text-white text-3xl leading-none w-8 shrink-0">‹</button>
         <div className="flex-1">
           <h1 className="text-white font-bold text-lg">📡 API Data Center</h1>
-          <p className="text-white/70 text-xs mt-0.5">All data collected from CKLottery API</p>
+          <p className="text-white/70 text-xs mt-0.5">All CKLottery API data — live</p>
         </div>
-        <button
-          onClick={loadAll}
-          disabled={!allLoaded}
-          className="bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-xl disabled:opacity-40"
-        >
-          ↻ Reload All
+        <button onClick={loadAll} disabled={!allDone}
+          className="bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-xl disabled:opacity-40">
+          ↻ Reload
         </button>
       </div>
 
-      {/* Summary Bar */}
+      {/* Summary */}
       <div className="mx-4 mt-3 bg-gradient-to-r from-indigo-500 to-blue-500 rounded-2xl p-4 text-white shadow-lg">
-        <div className="text-xs opacity-75 mb-1 font-medium">Live API Connection Summary</div>
+        <div className="text-xs opacity-75 mb-2 font-medium">Live API Summary</div>
         <div className="grid grid-cols-3 gap-2">
           <div className="text-center">
             <div className="text-2xl font-bold">{totalApis}/20</div>
@@ -242,97 +398,89 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           </div>
           <div className="text-center border-x border-white/20">
             <div className="text-2xl font-bold text-green-300">{successApis}</div>
-            <div className="text-[10px] opacity-75 mt-0.5">Connected</div>
+            <div className="text-[10px] opacity-75 mt-0.5">Connected ✓</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold text-yellow-300">{totalDataPoints}</div>
+            <div className="text-2xl font-bold text-yellow-300">{totalPoints}</div>
             <div className="text-[10px] opacity-75 mt-0.5">Data Points</div>
           </div>
         </div>
-        {!allLoaded && (
+        {!allDone && (
           <div className="mt-3 flex items-center gap-2">
             <div className="flex-1 bg-white/20 rounded-full h-1.5">
-              <div className="bg-white h-1.5 rounded-full transition-all" style={{ width: `${Math.round((totalApis / 20) * 100)}%` }} />
+              <div className="bg-white h-1.5 rounded-full transition-all"
+                style={{ width: `${Math.round((totalApis / 20) * 100)}%` }} />
             </div>
-            <span className="text-xs opacity-75">Loading…</span>
+            <span className="text-xs opacity-75">{totalApis}/20</span>
           </div>
         )}
       </div>
 
-      {/* Content */}
       <div className="px-4 mt-3">
 
-        {/* ── JWT Token Info ── */}
+        {/* JWT Token */}
         <SectionCard title="JWT Token Claims" icon="🔑" status="ok">
           {claims ? (
-            <div>
-              <KV label="User ID" value={claims.nameid ?? claims.sub ?? claims.userId} />
-              <KV label="Username" value={claims.name ?? claims.unique_name} />
-              <KV label="Role" value={claims.role ?? claims.Role} />
-              <KV label="IP Address" value={(claims as Record<string,unknown>).LoginIPAddress} />
-              <KV label="Login Mark" value={(claims as Record<string,unknown>).LoginMark} />
+            <>
+              <KV label="User ID"   value={pick(claims.nameid, claims.sub, (claims as Record<string,unknown>).UserId, claims.userId)} />
+              <KV label="Username"  value={pick(claims.name, claims.unique_name, (claims as Record<string,unknown>).NickName)} />
+              <KV label="Role"      value={pick(claims.role, (claims as Record<string,unknown>).Role)} />
+              <KV label="IP"        value={(claims as Record<string,unknown>).LoginIPAddress} />
               <KV label="Token Type" value={(claims as Record<string,unknown>).TokenType} />
-              <KV label="Expires" value={claims.exp ? new Date(Number(claims.exp) * 1000).toLocaleString() : "—"} />
-              <KV label="Issued At" value={claims.iat ? new Date(Number(claims.iat) * 1000).toLocaleString() : "—"} />
-            </div>
-          ) : <EmptyState msg="No JWT claims decoded" />}
+              <KV label="Expires"   value={claims.exp ? new Date(Number(claims.exp) * 1000).toLocaleString() : undefined} />
+              <KV label="Issued At" value={claims.iat ? new Date(Number(claims.iat) * 1000).toLocaleString() : undefined} />
+            </>
+          ) : <EmptyState msg="No JWT decoded" />}
         </SectionCard>
 
-        {/* ── User Info ── */}
-        <SectionCard title="User Account Info" icon="👤" status={userInfo.status}>
-          {userInfo.status === "loading" && <EmptyState msg="Fetching GetUserInfo…" />}
+        {/* User Info */}
+        <SectionCard title="User Account Info" icon="👤" status={userInfo.status} epName={userInfo.ep}>
+          {userInfo.status === "loading" && <EmptyState msg="Loading…" />}
           {userInfo.status === "error" && <EmptyState msg={userInfo.error} />}
           {userInfo.status === "ok" && (() => {
             const d = extractData(userInfo.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="User ID" value={d.userId ?? d.id ?? d.uid} />
-                <KV label="Nickname" value={d.nickname ?? d.nickName ?? d.userName} />
-                <KV label="Phone" value={d.mobile ?? d.phone ?? d.number} />
-                <KV label="Email" value={d.email} />
-                <KV label="Balance" value={d.balance ?? d.amount ?? d.money} />
-                <KV label="Total Balance" value={d.totalBalance ?? d.totalMoney} />
-                <KV label="VIP Level" value={d.vipLevel ?? d.vip ?? d.memberLevel} />
-                <KV label="Avatar" value={d.headImage ?? d.avatar ?? d.headImg} />
-                <KV label="Register Date" value={d.createTime ?? d.registerTime ?? d.createdAt} />
-                <KV label="Status" value={d.status} />
-                <KV label="Safe Balance" value={d.safeBalance ?? d.safeAmount} />
-                <KV label="Integral/Points" value={d.integral ?? d.points ?? d.score} />
-                <KV label="Inviter" value={d.inviteCode ?? d.inviterCode ?? d.parentCode} />
-                <KV label="Agent Code" value={d.agentCode ?? d.agentId} />
-                <KV label="Currency" value={d.currency ?? d.currencyType} />
-                <KV label="Real Name" value={d.realName ?? d.fullName} />
-              </div>
-            );
+            return <>
+              <KV label="User ID"      value={pick(d.userId, d.id, d.uid, d.memberId)} />
+              <KV label="Nickname"     value={pick(d.nickname, d.nickName, d.userName, d.name)} />
+              <KV label="Phone"        value={pick(d.mobile, d.phone, d.number, d.phoneNumber)} />
+              <KV label="Email"        value={d.email} />
+              <KV label="Balance"      value={pick(d.balance, d.amount, d.money, d.mainBalance)} />
+              <KV label="Total Balance" value={pick(d.totalBalance, d.totalMoney, d.totalAmount)} />
+              <KV label="VIP Level"    value={pick(d.vipLevel, d.vip, d.memberLevel, d.level)} />
+              <KV label="Safe Balance" value={pick(d.safeBalance, d.safeAmount)} />
+              <KV label="Points"       value={pick(d.integral, d.points, d.score)} />
+              <KV label="Invite Code"  value={pick(d.inviteCode, d.invitationCode, d.parentCode)} />
+              <KV label="Real Name"    value={pick(d.realName, d.fullName)} />
+              <KV label="Status"       value={d.status} />
+              <KV label="Register"     value={pick(d.createTime, d.registerTime, d.createdAt)} />
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── VIP ── */}
-        <SectionCard title="VIP Status" icon="🏆" status={vipInfo.status}>
-          {vipInfo.status === "loading" && <EmptyState msg="Fetching VIP data…" />}
+        {/* VIP Status */}
+        <SectionCard title="VIP Status" icon="🏆" status={vipInfo.status} epName={vipInfo.ep}>
+          {vipInfo.status === "loading" && <EmptyState msg="Loading…" />}
           {vipInfo.status === "error" && <EmptyState msg={vipInfo.error} />}
           {vipInfo.status === "ok" && (() => {
             const d = extractData(vipInfo.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="VIP Level" value={d.vipLevel ?? d.level ?? d.vip} />
-                <KV label="VIP Name" value={d.vipName ?? d.levelName} />
-                <KV label="Experience" value={d.experience ?? d.exp ?? d.expValue} />
-                <KV label="Next Level Exp" value={d.needExp ?? d.nextLevelExp ?? d.upgradeExp} />
-                <KV label="Total Recharge" value={d.totalRecharge ?? d.rechargeMoney ?? d.totalDeposit} />
-                <KV label="Withdrawal Limit" value={d.withdrawLimit ?? d.withdrawalLimit ?? d.dayWithdrawLimit} />
-                <KV label="Rebate Rate" value={d.rebateRate ?? d.rebate} />
-                <KV label="Weekly Bonus" value={d.weeklyBonus ?? d.weekBonus} />
-                <KV label="Monthly Bonus" value={d.monthlyBonus ?? d.monthBonus} />
-              </div>
-            );
+            return <>
+              <KV label="VIP Level"   value={pick(d.vipLevel, d.level, d.vip)} />
+              <KV label="VIP Name"    value={pick(d.vipName, d.levelName, d.name)} />
+              <KV label="Experience"  value={pick(d.experience, d.exp, d.expValue, d.currentExp)} />
+              <KV label="Need Exp"    value={pick(d.needExp, d.nextLevelExp, d.upgradeExp)} />
+              <KV label="Total Deposit" value={pick(d.totalRecharge, d.rechargeMoney, d.totalDeposit)} />
+              <KV label="Withdraw Limit" value={pick(d.withdrawLimit, d.withdrawalLimit, d.dayWithdrawLimit)} />
+              <KV label="Rebate Rate" value={pick(d.rebateRate, d.rebate)} />
+              <KV label="Weekly Bonus"  value={pick(d.weeklyBonus, d.weekBonus)} />
+              <KV label="Monthly Bonus" value={pick(d.monthlyBonus, d.monthBonus)} />
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── VIP List ── */}
-        <SectionCard title="All VIP Levels" icon="💎" status={vipList.status}>
-          {vipList.status === "loading" && <EmptyState msg="Fetching VIP levels…" />}
-          {vipList.status === "error" && <EmptyState msg={vipList.error} />}
+        {/* All VIP Levels */}
+        <SectionCard title="All VIP Levels" icon="💎" status={vipList.status} epName={vipList.ep}>
+          {vipList.status === "loading" && <EmptyState msg="Loading…" />}
+          {vipList.status === "error" && <EmptyState msg="Endpoint not available on this server" />}
           {vipList.status === "ok" && (() => {
             const list = extractList(vipList.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No VIP levels returned" />;
@@ -340,16 +488,16 @@ export default function ApiCenterPage({ session, onBack }: Props) {
               <div className="space-y-2">
                 {list.map((item, i) => (
                   <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center text-white text-xs font-bold">
-                      {String(item.vipLevel ?? item.level ?? i + 1)}
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                      {String(pick(item.vipLevel, item.level, i + 1))}
                     </div>
-                    <div className="flex-1">
-                      <div className="text-xs font-semibold text-gray-800">{String(item.vipName ?? item.levelName ?? `VIP ${i + 1}`)}</div>
-                      <div className="text-xs text-gray-400">Deposit: {String(item.rechargeMoney ?? item.depositMoney ?? "—")}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-semibold text-gray-800">{String(pick(item.vipName, item.levelName, item.name, `VIP ${i + 1}`))}</div>
+                      <div className="text-[10px] text-gray-400">Deposit: {String(pick(item.rechargeMoney, item.depositMoney, item.minDeposit, "—"))}</div>
                     </div>
-                    <div className="text-right">
-                      <div className="text-xs text-green-600 font-medium">{String(item.withdrawLimit ?? item.withdrawalLimit ?? "—")}</div>
-                      <div className="text-[10px] text-gray-400">Withdraw limit</div>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs text-green-600 font-medium">{String(pick(item.withdrawLimit, item.withdrawalLimit, item.dayLimit, "—"))}</div>
+                      <div className="text-[10px] text-gray-400">limit</div>
                     </div>
                   </div>
                 ))}
@@ -358,61 +506,58 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Wallets ── */}
-        <SectionCard title="All Wallets & Balances" icon="💰" status={wallets.status}>
-          {wallets.status === "loading" && <EmptyState msg="Fetching wallets…" />}
+        {/* Wallets */}
+        <SectionCard title="All Wallets & Balances" icon="💰" status={wallets.status} epName={wallets.ep}>
+          {wallets.status === "loading" && <EmptyState msg="Loading…" />}
           {wallets.status === "error" && <EmptyState msg={wallets.error} />}
           {wallets.status === "ok" && (() => {
             const d = extractData(wallets.data as Record<string,unknown>);
-            const walletList = (d.walletList ?? d.wallets ?? d.list) as Record<string,unknown>[] | undefined;
-            return (
-              <div>
-                <KV label="Main Balance" value={d.balance ?? d.mainBalance ?? d.amount} />
-                <KV label="E-Wallet" value={d.eWalletBalance ?? d.eWallet} />
-                <KV label="Bank Balance" value={d.bankBalance} />
-                <KV label="USDT Balance" value={d.usdtBalance ?? d.usdt} />
-                <KV label="Safe Balance" value={d.safeBalance ?? d.safe} />
-                <KV label="Total Assets" value={d.totalBalance ?? d.totalAmount ?? d.total} />
-                <KV label="Integral/Points" value={d.integral ?? d.points} />
-                {walletList && walletList.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    {walletList.map((w, i) => (
-                      <div key={i} className="flex justify-between bg-blue-50 rounded-lg px-3 py-1.5">
-                        <span className="text-xs text-gray-600">{String(w.walletName ?? w.name ?? w.type ?? `Wallet ${i + 1}`)}</span>
-                        <span className="text-xs font-bold text-blue-700">{String(w.balance ?? w.amount ?? w.money ?? "—")}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
+            const wList = (pick(d.walletList, d.wallets, d.list) ?? []) as Record<string,unknown>[];
+            return <>
+              <KV label="Main Balance"  value={pick(d.balance, d.mainBalance, d.amount)} />
+              <KV label="E-Wallet"      value={pick(d.eWalletBalance, d.eWallet, d.eWalletAmount)} />
+              <KV label="USDT"          value={pick(d.usdtBalance, d.usdt, d.usdtAmount)} />
+              <KV label="Safe Balance"  value={pick(d.safeBalance, d.safe, d.safeAmount)} />
+              <KV label="Total Assets"  value={pick(d.totalBalance, d.totalAmount, d.total)} />
+              <KV label="Points"        value={pick(d.integral, d.points, d.score)} />
+              {wList.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {wList.map((w, i) => (
+                    <div key={i} className="flex justify-between bg-blue-50 rounded-lg px-3 py-1.5">
+                      <span className="text-xs text-gray-600">{String(pick(w.walletName, w.name, w.type, `Wallet ${i + 1}`))}</span>
+                      <span className="text-xs font-bold text-blue-700">{String(pick(w.balance, w.amount, w.money, "—"))}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Bank Cards ── */}
-        <SectionCard title="Bank Cards / Withdrawal Accounts" icon="🏦" status={bankCards.status}>
-          {bankCards.status === "loading" && <EmptyState msg="Fetching bank cards…" />}
-          {bankCards.status === "error" && <EmptyState msg={bankCards.error} />}
+        {/* Bank Cards */}
+        <SectionCard title="Bank Cards / Payout Accounts" icon="🏦" status={bankCards.status} epName={bankCards.ep}>
+          {bankCards.status === "loading" && <EmptyState msg="Loading…" />}
+          {bankCards.status === "error" && <EmptyState msg="Endpoint not available" />}
           {bankCards.status === "ok" && (() => {
             const list = extractList(bankCards.data as Record<string,unknown>);
             const d = extractData(bankCards.data as Record<string,unknown>);
-            if (!list.length) return (
-              <div>
-                <KV label="Card Number" value={d.cardNumber ?? d.bankAccount ?? d.accountNo} />
-                <KV label="Bank Name" value={d.bankName} />
-                <KV label="Account Name" value={d.accountName ?? d.holderName} />
-                <KV label="IFSC" value={d.ifscCode ?? d.ifsc} />
-                <KV label="UPI ID" value={d.upiId ?? d.vpa} />
+            if (list.length === 0) return (
+              <>
+                <KV label="Card Number"  value={pick(d.cardNumber, d.bankAccount, d.accountNo, d.cardNo)} />
+                <KV label="Bank Name"    value={pick(d.bankName, d.bank)} />
+                <KV label="Account Name" value={pick(d.accountName, d.holderName, d.realName)} />
+                <KV label="IFSC"         value={pick(d.ifscCode, d.ifsc, d.bankCode)} />
+                <KV label="UPI ID"       value={pick(d.upiId, d.vpa, d.upiAccount)} />
                 {Object.keys(d).length === 0 && <EmptyState msg="No bank cards on file" />}
-              </div>
+              </>
             );
             return (
               <div className="space-y-2">
                 {list.map((card, i) => (
                   <div key={i} className="bg-gradient-to-r from-blue-500 to-indigo-500 rounded-xl p-3 text-white">
-                    <div className="text-xs opacity-70 mb-1">{String(card.bankName ?? card.bank ?? "Bank Card")}</div>
-                    <div className="font-mono text-sm font-bold">{String(card.cardNumber ?? card.accountNo ?? card.bankAccount ?? "—")}</div>
-                    <div className="text-xs opacity-80 mt-1">{String(card.accountName ?? card.holderName ?? "")}</div>
+                    <div className="text-xs opacity-70 mb-1">{String(pick(card.bankName, card.bank, "Bank Card"))}</div>
+                    <div className="font-mono text-sm font-bold">{String(pick(card.cardNumber, card.accountNo, card.bankAccount, card.cardNo, "—"))}</div>
+                    <div className="text-xs opacity-80 mt-1">{String(pick(card.accountName, card.holderName, card.realName, ""))}</div>
                   </div>
                 ))}
               </div>
@@ -420,9 +565,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Deposit History ── */}
-        <SectionCard title="Deposit History" icon="📥" status={deposits.status}>
-          {deposits.status === "loading" && <EmptyState msg="Fetching deposits…" />}
+        {/* Deposits */}
+        <SectionCard title="Deposit History" icon="📥" status={deposits.status} epName={deposits.ep}>
+          {deposits.status === "loading" && <EmptyState msg="Loading…" />}
           {deposits.status === "error" && <EmptyState msg={deposits.error} />}
           {deposits.status === "ok" && (() => {
             const list = extractList(deposits.data as Record<string,unknown>);
@@ -430,32 +575,32 @@ export default function ApiCenterPage({ session, onBack }: Props) {
             return (
               <div className="space-y-2">
                 {list.slice(0, 8).map((item, i) => {
-                  const stateVal = item.state ?? item.status;
-                  const ok = stateVal === 1 || stateVal === "1" || String(stateVal).toLowerCase() === "success";
-                  const pending = stateVal === 0 || stateVal === "0";
+                  const st = item.state ?? item.status;
+                  const ok = st === 1 || st === "1" || String(st).toLowerCase() === "success";
+                  const pending = st === 0 || st === "0";
                   return (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2.5">
-                      <div className={`w-2 h-8 rounded-full ${ok ? "bg-green-400" : pending ? "bg-yellow-400" : "bg-red-400"}`} />
+                      <div className={`w-2 h-8 rounded-full shrink-0 ${ok ? "bg-green-400" : pending ? "bg-yellow-400" : "bg-red-400"}`} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-bold text-gray-800">K{String(item.rechargeAmount ?? item.money ?? item.amount ?? "—")}</div>
-                        <div className="text-[10px] text-gray-400 truncate">{String(item.rechargeNumber ?? item.orderNo ?? item.id ?? "")}</div>
-                        <div className="text-[10px] text-gray-400">{String(item.createTime ?? item.createdAt ?? "")}</div>
+                        <div className="text-xs font-bold text-gray-800">K{String(pick(item.rechargeAmount, item.money, item.amount, "—"))}</div>
+                        <div className="text-[10px] text-gray-400 truncate">{String(pick(item.rechargeNumber, item.rechargeSNum, item.orderNo, item.id, ""))}</div>
+                        <div className="text-[10px] text-gray-400">{String(pick(item.createTime, item.createdAt, "")).slice(0, 19)}</div>
                       </div>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${ok ? "bg-green-100 text-green-700" : pending ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-500"}`}>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${ok ? "bg-green-100 text-green-700" : pending ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-500"}`}>
                         {ok ? "Success" : pending ? "Pending" : "Failed"}
                       </span>
                     </div>
                   );
                 })}
-                {list.length > 8 && <div className="text-xs text-center text-gray-400 pt-1">+{list.length - 8} more records</div>}
+                {list.length > 8 && <div className="text-xs text-center text-gray-400 pt-1">+{list.length - 8} more</div>}
               </div>
             );
           })()}
         </SectionCard>
 
-        {/* ── Withdrawal History ── */}
-        <SectionCard title="Withdrawal History" icon="📤" status={withdraws.status}>
-          {withdraws.status === "loading" && <EmptyState msg="Fetching withdrawals…" />}
+        {/* Withdrawals */}
+        <SectionCard title="Withdrawal History" icon="📤" status={withdraws.status} epName={withdraws.ep}>
+          {withdraws.status === "loading" && <EmptyState msg="Loading…" />}
           {withdraws.status === "error" && <EmptyState msg={withdraws.error} />}
           {withdraws.status === "ok" && (() => {
             const list = extractList(withdraws.data as Record<string,unknown>);
@@ -463,18 +608,18 @@ export default function ApiCenterPage({ session, onBack }: Props) {
             return (
               <div className="space-y-2">
                 {list.slice(0, 6).map((item, i) => {
-                  const stateVal = item.state ?? item.status;
-                  const ok = stateVal === 1 || stateVal === "1";
-                  const pending = stateVal === 0 || stateVal === "0";
+                  const st = item.state ?? item.status;
+                  const ok = st === 1 || st === "1";
+                  const pending = st === 0 || st === "0";
                   return (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2.5">
-                      <div className={`w-2 h-8 rounded-full ${ok ? "bg-green-400" : pending ? "bg-yellow-400" : "bg-red-400"}`} />
+                      <div className={`w-2 h-8 rounded-full shrink-0 ${ok ? "bg-green-400" : pending ? "bg-yellow-400" : "bg-red-400"}`} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-bold text-gray-800">K{String(item.withdrawAmount ?? item.money ?? item.amount ?? "—")}</div>
-                        <div className="text-[10px] text-gray-400 truncate">{String(item.withdrawNumber ?? item.orderNo ?? item.id ?? "")}</div>
-                        <div className="text-[10px] text-gray-400">{String(item.createTime ?? item.createdAt ?? "")}</div>
+                        <div className="text-xs font-bold text-gray-800">K{String(pick(item.withdrawAmount, item.money, item.amount, "—"))}</div>
+                        <div className="text-[10px] text-gray-400 truncate">{String(pick(item.withdrawNumber, item.orderNo, item.id, ""))}</div>
+                        <div className="text-[10px] text-gray-400">{String(pick(item.createTime, item.createdAt, "")).slice(0, 19)}</div>
                       </div>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${ok ? "bg-green-100 text-green-700" : pending ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-500"}`}>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${ok ? "bg-green-100 text-green-700" : pending ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-500"}`}>
                         {ok ? "Done" : pending ? "Pending" : "Failed"}
                       </span>
                     </div>
@@ -485,40 +630,41 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Withdraw Info / Limits ── */}
-        <SectionCard title="Withdrawal Limits & Info" icon="📊" status={withdrawInfo.status}>
-          {withdrawInfo.status === "loading" && <EmptyState msg="Fetching limits…" />}
-          {withdrawInfo.status === "error" && <EmptyState msg={withdrawInfo.error} />}
+        {/* Withdrawal Limits */}
+        <SectionCard title="Withdrawal Limits & Rules" icon="📊" status={withdrawInfo.status} epName={withdrawInfo.ep}>
+          {withdrawInfo.status === "loading" && <EmptyState msg="Loading…" />}
+          {withdrawInfo.status === "error" && <EmptyState msg="Endpoint not available" />}
           {withdrawInfo.status === "ok" && (() => {
             const d = extractData(withdrawInfo.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Min Withdraw" value={d.minMoney ?? d.minWithdraw ?? d.minAmount} />
-                <KV label="Max Withdraw" value={d.maxMoney ?? d.maxWithdraw ?? d.maxAmount} />
-                <KV label="Daily Limit" value={d.dayLimit ?? d.dailyLimit ?? d.dayWithdrawLimit} />
-                <KV label="Fee" value={d.fee ?? d.serviceFee ?? d.handlingFee} />
-                <KV label="Times Today" value={d.todayTimes ?? d.dayTimes ?? d.usedTimes} />
-                <KV label="Remaining Times" value={d.remainTimes ?? d.leftTimes} />
-              </div>
-            );
+            return <>
+              <KV label="Min Withdraw"  value={pick(d.minMoney, d.minWithdraw, d.minAmount, d.min)} />
+              <KV label="Max Withdraw"  value={pick(d.maxMoney, d.maxWithdraw, d.maxAmount, d.max)} />
+              <KV label="Daily Limit"   value={pick(d.dayLimit, d.dailyLimit, d.dayWithdrawLimit)} />
+              <KV label="Fee"           value={pick(d.fee, d.serviceFee, d.handlingFee, d.withdrawFee)} />
+              <KV label="Times Today"   value={pick(d.todayTimes, d.dayTimes, d.usedTimes)} />
+              <KV label="Remain Times"  value={pick(d.remainTimes, d.leftTimes)} />
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Recharge Types / Payment Methods ── */}
-        <SectionCard title="Payment Methods Available" icon="💳" status={rechargeTypes.status}>
-          {rechargeTypes.status === "loading" && <EmptyState msg="Fetching payment methods…" />}
-          {rechargeTypes.status === "error" && <EmptyState msg={rechargeTypes.error} />}
-          {rechargeTypes.status === "ok" && (() => {
-            const list = extractList(rechargeTypes.data as Record<string,unknown>);
+        {/* Payment Methods */}
+        <SectionCard title="Payment / Deposit Methods" icon="💳" status={payMethods.status} epName={payMethods.ep}>
+          {payMethods.status === "loading" && <EmptyState msg="Loading…" />}
+          {payMethods.status === "error" && <EmptyState msg="Endpoint not available" />}
+          {payMethods.status === "ok" && (() => {
+            const list = extractList(payMethods.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No payment methods returned" />;
             return (
               <div className="space-y-1.5">
-                {list.slice(0, 10).map((m, i) => (
+                {list.slice(0, 12).map((m, i) => (
                   <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
-                    <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-base">💳</div>
-                    <div className="flex-1">
-                      <div className="text-xs font-semibold text-gray-800">{String(m.payName ?? m.typeName ?? m.name ?? m.id ?? `Method ${i + 1}`)}</div>
-                      <div className="text-[10px] text-gray-400">Min: {String(m.miniPrice ?? m.minPrice ?? "—")} · Max: {String(m.maxPrice ?? m.maxMoney ?? "—")}</div>
+                    <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-base shrink-0">💳</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-semibold text-gray-800">{String(pick(m.payName, m.typeName, m.name, m.channelName, m.id, `Method ${i + 1}`))}</div>
+                      <div className="text-[10px] text-gray-400">
+                        Min: {String(pick(m.miniPrice, m.minPrice, m.minMoney, m.min, "—"))}
+                        {" · "}Max: {String(pick(m.maxPrice, m.maxMoney, m.max, "—"))}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -527,30 +673,29 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Bet Records ── */}
-        <SectionCard title="Game / Bet Records" icon="🎮" status={bets.status}>
-          {bets.status === "loading" && <EmptyState msg="Fetching bet records…" />}
-          {bets.status === "error" && <EmptyState msg={bets.error} />}
+        {/* Bet Records */}
+        <SectionCard title="Game / Bet Records" icon="🎮" status={bets.status} epName={bets.ep}>
+          {bets.status === "loading" && <EmptyState msg="Loading…" />}
+          {bets.status === "error" && <EmptyState msg="Endpoint not available" />}
           {bets.status === "ok" && (() => {
             const list = extractList(bets.data as Record<string,unknown>);
-            if (!list.length) return <EmptyState msg="No bet records found" />;
+            if (!list.length) return <EmptyState msg="No bet records" />;
             return (
               <div className="space-y-2">
                 {list.slice(0, 6).map((item, i) => {
-                  const profit = item.profit ?? item.winAmount ?? item.winMoney;
+                  const profit = pick(item.profit, item.winAmount, item.winMoney, item.award);
                   const isWin = profit !== undefined && Number(profit) > 0;
                   return (
                     <div key={i} className="bg-gray-50 rounded-xl px-3 py-2.5">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-bold text-gray-800">{String(item.gameName ?? item.game ?? item.gameType ?? `Game ${i + 1}`)}</span>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-xs font-bold text-gray-800">{String(pick(item.gameName, item.game, item.gameType, item.typeName, `Record ${i + 1}`))}</span>
                         <span className={`text-xs font-bold ${isWin ? "text-green-600" : "text-red-500"}`}>
-                          {isWin ? `+K${String(profit)}` : `K${String(item.betAmount ?? item.money ?? "—")}`}
+                          {isWin ? `+K${String(profit)}` : `-K${String(pick(item.betAmount, item.money, item.amount, "?"))}`}
                         </span>
                       </div>
                       <div className="flex gap-3 text-[10px] text-gray-400">
-                        <span>Bet: K{String(item.betAmount ?? item.money ?? "—")}</span>
-                        <span>Result: {String(item.result ?? item.status ?? "—")}</span>
-                        <span>{String(item.createTime ?? item.betTime ?? "").slice(0, 16)}</span>
+                        <span>Bet: K{String(pick(item.betAmount, item.money, item.amount, "—"))}</span>
+                        <span>· {String(pick(item.createTime, item.betTime, item.orderTime, "")).slice(0, 16)}</span>
                       </div>
                     </div>
                   );
@@ -561,29 +706,29 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Transactions ── */}
-        <SectionCard title="Balance Transaction Records" icon="📋" status={transactions.status}>
-          {transactions.status === "loading" && <EmptyState msg="Fetching transactions…" />}
-          {transactions.status === "error" && <EmptyState msg={transactions.error} />}
+        {/* Transactions */}
+        <SectionCard title="Balance Transaction Records" icon="📋" status={transactions.status} epName={transactions.ep}>
+          {transactions.status === "loading" && <EmptyState msg="Loading…" />}
+          {transactions.status === "error" && <EmptyState msg="Endpoint not available" />}
           {transactions.status === "ok" && (() => {
             const list = extractList(transactions.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No transaction records" />;
             return (
               <div className="space-y-2">
                 {list.slice(0, 8).map((item, i) => {
-                  const amount = Number(item.money ?? item.amount ?? 0);
-                  const isPositive = amount > 0;
+                  const amount = Number(pick(item.money, item.amount, item.changeAmount, 0));
+                  const pos = amount > 0;
                   return (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
-                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${isPositive ? "bg-green-100 text-green-600" : "bg-red-100 text-red-500"}`}>
-                        {isPositive ? "+" : "−"}
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${pos ? "bg-green-100 text-green-600" : "bg-red-100 text-red-500"}`}>
+                        {pos ? "+" : "−"}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-gray-800">{String(item.remark ?? item.type ?? item.typeName ?? "Transaction")}</div>
-                        <div className="text-[10px] text-gray-400">{String(item.createTime ?? item.createdAt ?? "").slice(0, 16)}</div>
+                        <div className="text-xs font-semibold text-gray-800">{String(pick(item.remark, item.type, item.typeName, item.note, "Transaction"))}</div>
+                        <div className="text-[10px] text-gray-400">{String(pick(item.createTime, item.createdAt, "")).slice(0, 16)}</div>
                       </div>
-                      <div className={`text-sm font-bold ${isPositive ? "text-green-600" : "text-red-500"}`}>
-                        {isPositive ? "+" : ""}K{Math.abs(amount).toLocaleString()}
+                      <div className={`text-sm font-bold shrink-0 ${pos ? "text-green-600" : "text-red-500"}`}>
+                        {pos ? "+" : ""}K{Math.abs(amount).toLocaleString()}
                       </div>
                     </div>
                   );
@@ -593,27 +738,37 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── WinGo History ── */}
-        <SectionCard title="WinGo Lottery Results" icon="🎱" status={wingoHistory.status}>
-          {wingoHistory.status === "loading" && <EmptyState msg="Fetching WinGo results…" />}
-          {wingoHistory.status === "error" && <EmptyState msg={wingoHistory.error} />}
-          {wingoHistory.status === "ok" && (() => {
-            const list = extractList(wingoHistory.data as Record<string,unknown>);
+        {/* WinGo */}
+        <SectionCard title="WinGo Lottery Results" icon="🎱" status={wingo.status} epName={wingo.ep}>
+          {wingo.status === "loading" && <EmptyState msg="Loading…" />}
+          {wingo.status === "error" && <EmptyState msg={wingo.error} />}
+          {wingo.status === "ok" && (() => {
+            const list = extractList(wingo.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No WinGo results" />;
             return (
               <div className="space-y-1.5">
-                {list.slice(0, 8).map((r, i) => {
-                  const numRaw = String(r.preStopNumber ?? r.number ?? r.winNumber ?? r.openCode ?? "");
-                  const n = isNaN(Number(numRaw.charAt(0))) ? "?" : numRaw.charAt(0);
-                  const color = String(r.colour ?? r.color ?? r.winColor ?? "");
-                  const period = String(r.issueNumber ?? r.period ?? r.issue ?? `#${i + 1}`);
-                  const isGreen = color.toLowerCase().includes("green");
-                  const isRed = color.toLowerCase().includes("red");
+                {list.slice(0, 10).map((r, i) => {
+                  const numRaw = String(pick(r.preStopNumber, r.number, r.winNumber, r.openCode, r.result, r.nums, r.lotteryResult, ""));
+                  const n = numRaw.charAt(0);
+                  const num = isNaN(Number(n)) ? "?" : Number(n);
+                  const colorRaw = String(pick(r.colour, r.color, r.winColour, r.winColor, r.winColorName, r.colorName, r.colorInfo, "")).toLowerCase();
+                  const isGreen = colorRaw.includes("green") || (typeof num === "number" && num !== 0 && num !== 5 && num % 2 === 1);
+                  const isRed = colorRaw.includes("red") || (typeof num === "number" && num !== 0 && num !== 5 && num % 2 === 0);
+                  const isViolet = colorRaw.includes("violet") || colorRaw.includes("purple") || num === 0 || num === 5;
+                  const bgClass = isViolet ? "bg-violet-500" : isGreen ? "bg-green-500" : isRed ? "bg-red-500" : "bg-gray-400";
+                  const period = String(pick(r.issueNumber, r.period, r.issue, r.no, r.periodNum, r.roundId, `#${i + 1}`));
                   return (
                     <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
-                      <span className="text-[10px] text-gray-400 w-24 shrink-0">{period.slice(-8)}</span>
-                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold ${isGreen ? "bg-green-500" : isRed ? "bg-red-500" : "bg-purple-500"}`}>{n}</div>
-                      <span className={`text-xs font-semibold ${isGreen ? "text-green-600" : isRed ? "text-red-500" : "text-purple-600"}`}>{color || "—"}</span>
+                      <span className="text-[10px] text-gray-400 w-28 shrink-0 truncate">{period.slice(-10)}</span>
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${bgClass}`}>
+                        {typeof num === "number" ? num : "?"}
+                      </div>
+                      <span className={`text-xs font-semibold ${isViolet ? "text-violet-600" : isGreen ? "text-green-600" : "text-red-500"}`}>
+                        {isViolet ? "Violet" : isGreen ? "Green" : isRed ? "Red" : colorRaw || "—"}
+                      </span>
+                      <span className={`text-[10px] ml-auto px-1.5 py-0.5 rounded-full font-medium ${typeof num === "number" && num >= 5 ? "bg-orange-100 text-orange-600" : "bg-blue-50 text-blue-500"}`}>
+                        {typeof num === "number" ? (num >= 5 ? "Big" : "Small") : ""}
+                      </span>
                     </div>
                   );
                 })}
@@ -622,131 +777,118 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Invite / Referral ── */}
-        <SectionCard title="Invite & Referral Info" icon="👥" status={invite.status}>
-          {invite.status === "loading" && <EmptyState msg="Fetching invite info…" />}
-          {invite.status === "error" && <EmptyState msg={invite.error} />}
+        {/* Invite */}
+        <SectionCard title="Invite & Referral" icon="👥" status={invite.status} epName={invite.ep}>
+          {invite.status === "loading" && <EmptyState msg="Loading…" />}
+          {invite.status === "error" && <EmptyState msg="Endpoint not available" />}
           {invite.status === "ok" && (() => {
             const d = extractData(invite.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Invite Code" value={d.inviteCode ?? d.invitationCode ?? d.code} />
-                <KV label="Invite Link" value={d.inviteLink ?? d.inviteUrl ?? d.link} />
-                <KV label="Total Invites" value={d.inviteNum ?? d.totalInvite ?? d.count} />
-                <KV label="Valid Invites" value={d.validInviteNum ?? d.validCount ?? d.validInvite} />
-                <KV label="Commission" value={d.commission ?? d.totalCommission ?? d.rebate} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No invite data" />}
-              </div>
-            );
+            return <>
+              <KV label="Invite Code"     value={pick(d.inviteCode, d.invitationCode, d.code, d.shareCode)} />
+              <KV label="Invite Link"     value={pick(d.inviteLink, d.inviteUrl, d.link, d.shareLink)} />
+              <KV label="Total Invites"   value={pick(d.inviteNum, d.totalInvite, d.count, d.total)} />
+              <KV label="Valid Invites"   value={pick(d.validInviteNum, d.validCount, d.validInvite)} />
+              <KV label="Commission"      value={pick(d.commission, d.totalCommission, d.rebate)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No invite data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Agent Info ── */}
-        <SectionCard title="Agent / Downline Info" icon="🤝" status={agent.status}>
-          {agent.status === "loading" && <EmptyState msg="Fetching agent data…" />}
-          {agent.status === "error" && <EmptyState msg={agent.error} />}
+        {/* Agent */}
+        <SectionCard title="Agent / Downline Info" icon="🤝" status={agent.status} epName={agent.ep}>
+          {agent.status === "loading" && <EmptyState msg="Loading…" />}
+          {agent.status === "error" && <EmptyState msg="Endpoint not available" />}
           {agent.status === "ok" && (() => {
             const d = extractData(agent.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Agent Code" value={d.agentCode ?? d.agentId ?? d.code} />
-                <KV label="Total Members" value={d.totalMember ?? d.memberCount ?? d.total} />
-                <KV label="Active Members" value={d.activeMember ?? d.activeCount} />
-                <KV label="Total Commission" value={d.totalCommission ?? d.commission} />
-                <KV label="Yesterday Commission" value={d.yesterdayCommission} />
-                <KV label="Level" value={d.agentLevel ?? d.level} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No agent data (may need agent account)" />}
-              </div>
-            );
+            return <>
+              <KV label="Agent Code"      value={pick(d.agentCode, d.agentId, d.code)} />
+              <KV label="Total Members"   value={pick(d.totalMember, d.memberCount, d.total, d.count)} />
+              <KV label="Active Members"  value={pick(d.activeMember, d.activeCount, d.active)} />
+              <KV label="Total Commission" value={pick(d.totalCommission, d.commission)} />
+              <KV label="Yesterday"       value={pick(d.yesterdayCommission, d.yesterday)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No agent data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Team Info ── */}
-        <SectionCard title="Team Statistics" icon="📈" status={team.status}>
-          {team.status === "loading" && <EmptyState msg="Fetching team data…" />}
-          {team.status === "error" && <EmptyState msg={team.error} />}
+        {/* Team */}
+        <SectionCard title="Team Statistics" icon="📈" status={team.status} epName={team.ep}>
+          {team.status === "loading" && <EmptyState msg="Loading…" />}
+          {team.status === "error" && <EmptyState msg="Endpoint not available" />}
           {team.status === "ok" && (() => {
             const d = extractData(team.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Team Size" value={d.teamCount ?? d.totalTeam ?? d.total} />
-                <KV label="Direct Members" value={d.directCount ?? d.direct ?? d.level1Count} />
-                <KV label="Team Deposit" value={d.teamDeposit ?? d.totalDeposit ?? d.rechargeMoney} />
-                <KV label="Team Bet" value={d.teamBet ?? d.totalBet ?? d.betAmount} />
-                <KV label="Team Commission" value={d.teamCommission ?? d.commission} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No team data" />}
-              </div>
-            );
+            return <>
+              <KV label="Team Size"       value={pick(d.teamCount, d.totalTeam, d.total, d.count)} />
+              <KV label="Direct Members"  value={pick(d.directCount, d.direct, d.level1Count, d.firstCount)} />
+              <KV label="Team Deposit"    value={pick(d.teamDeposit, d.totalDeposit, d.rechargeMoney)} />
+              <KV label="Team Bet"        value={pick(d.teamBet, d.totalBet, d.betAmount)} />
+              <KV label="Commission"      value={pick(d.teamCommission, d.commission)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No team data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Rebate ── */}
-        <SectionCard title="Rebate / Cashback Info" icon="💸" status={rebate.status}>
-          {rebate.status === "loading" && <EmptyState msg="Fetching rebate data…" />}
-          {rebate.status === "error" && <EmptyState msg={rebate.error} />}
+        {/* Rebate */}
+        <SectionCard title="Rebate / Cashback" icon="💸" status={rebate.status} epName={rebate.ep}>
+          {rebate.status === "loading" && <EmptyState msg="Loading…" />}
+          {rebate.status === "error" && <EmptyState msg="Endpoint not available" />}
           {rebate.status === "ok" && (() => {
             const d = extractData(rebate.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Rebate Rate" value={d.rebateRate ?? d.rate ?? d.rebate} />
-                <KV label="Total Rebate" value={d.totalRebate ?? d.totalAmount} />
-                <KV label="Today Rebate" value={d.todayRebate ?? d.todayAmount} />
-                <KV label="Bet Required" value={d.betAmount ?? d.validBet ?? d.requireBet} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No rebate data" />}
-              </div>
-            );
+            return <>
+              <KV label="Rebate Rate"  value={pick(d.rebateRate, d.rate, d.rebate)} />
+              <KV label="Total Rebate" value={pick(d.totalRebate, d.totalAmount, d.total)} />
+              <KV label="Today"        value={pick(d.todayRebate, d.todayAmount, d.today)} />
+              <KV label="Bet Required" value={pick(d.betAmount, d.validBet, d.requireBet)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No rebate data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Safe ── */}
-        <SectionCard title="Safe / Savings Vault" icon="🔒" status={safe.status}>
-          {safe.status === "loading" && <EmptyState msg="Fetching safe info…" />}
-          {safe.status === "error" && <EmptyState msg={safe.error} />}
+        {/* Safe */}
+        <SectionCard title="Safe / Savings Vault" icon="🔒" status={safe.status} epName={safe.ep}>
+          {safe.status === "loading" && <EmptyState msg="Loading…" />}
+          {safe.status === "error" && <EmptyState msg="Endpoint not available" />}
           {safe.status === "ok" && (() => {
             const d = extractData(safe.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Safe Balance" value={d.safeBalance ?? d.balance ?? d.amount} />
-                <KV label="Interest Rate" value={d.interestRate ?? d.rate} />
-                <KV label="Status" value={d.status ?? d.state} />
-                <KV label="Daily Interest" value={d.dailyInterest ?? d.interest} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No safe/vault data" />}
-              </div>
-            );
+            return <>
+              <KV label="Safe Balance"  value={pick(d.safeBalance, d.balance, d.amount)} />
+              <KV label="Interest Rate" value={pick(d.interestRate, d.rate)} />
+              <KV label="Status"        value={pick(d.status, d.state)} />
+              <KV label="Daily Interest" value={pick(d.dailyInterest, d.interest)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No safe data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Sign-in ── */}
-        <SectionCard title="Daily Sign-in Status" icon="📅" status={signInfo.status}>
-          {signInfo.status === "loading" && <EmptyState msg="Fetching sign-in info…" />}
-          {signInfo.status === "error" && <EmptyState msg={signInfo.error} />}
+        {/* Sign-in */}
+        <SectionCard title="Daily Sign-in Status" icon="📅" status={signInfo.status} epName={signInfo.ep}>
+          {signInfo.status === "loading" && <EmptyState msg="Loading…" />}
+          {signInfo.status === "error" && <EmptyState msg="Endpoint not available" />}
           {signInfo.status === "ok" && (() => {
             const d = extractData(signInfo.data as Record<string,unknown>);
-            return (
-              <div>
-                <KV label="Consecutive Days" value={d.consecutiveDays ?? d.signDays ?? d.days} />
-                <KV label="Today Signed" value={d.isSigned ?? d.todaySigned ?? d.status} />
-                <KV label="Today Reward" value={d.todayReward ?? d.reward ?? d.bonus} />
-                <KV label="Total Sign-ins" value={d.totalSign ?? d.total} />
-                {Object.keys(d).length === 0 && <EmptyState msg="No sign-in data" />}
-              </div>
-            );
+            return <>
+              <KV label="Consecutive Days" value={pick(d.consecutiveDays, d.signDays, d.days, d.continuousDays)} />
+              <KV label="Today Signed"     value={pick(d.isSigned, d.todaySigned, d.isSignIn, d.signStatus, d.status)} />
+              <KV label="Today Reward"     value={pick(d.todayReward, d.reward, d.bonus, d.signReward)} />
+              <KV label="Total Sign-ins"   value={pick(d.totalSign, d.total, d.totalDays)} />
+              {Object.keys(d).length === 0 && <EmptyState msg="No sign-in data" />}
+            </>;
           })()}
         </SectionCard>
 
-        {/* ── Notices ── */}
-        <SectionCard title="System Notices" icon="🔔" status={notice.status}>
-          {notice.status === "loading" && <EmptyState msg="Fetching notices…" />}
-          {notice.status === "error" && <EmptyState msg={notice.error} />}
-          {notice.status === "ok" && (() => {
-            const list = extractList(notice.data as Record<string,unknown>);
+        {/* Notices */}
+        <SectionCard title="System Notices" icon="🔔" status={notices.status} epName={notices.ep}>
+          {notices.status === "loading" && <EmptyState msg="Loading…" />}
+          {notices.status === "error" && <EmptyState msg="Endpoint not available" />}
+          {notices.status === "ok" && (() => {
+            const list = extractList(notices.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No notices" />;
             return (
               <div className="space-y-2">
                 {list.slice(0, 5).map((item, i) => (
                   <div key={i} className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2">
-                    <div className="text-xs font-semibold text-blue-800">{String(item.title ?? item.noticeTitle ?? `Notice ${i + 1}`)}</div>
-                    <div className="text-[10px] text-blue-600 mt-0.5 line-clamp-2">{String(item.content ?? item.noticeContent ?? "")}</div>
+                    <div className="text-xs font-semibold text-blue-800">{String(pick(item.title, item.noticeTitle, item.subject, `Notice ${i + 1}`))}</div>
+                    <div className="text-[10px] text-blue-600 mt-0.5 line-clamp-2">{String(pick(item.content, item.noticeContent, item.body, item.text, ""))}</div>
                   </div>
                 ))}
               </div>
@@ -754,19 +896,22 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Activities ── */}
-        <SectionCard title="Promotions & Activities" icon="🎁" status={activity.status}>
-          {activity.status === "loading" && <EmptyState msg="Fetching activities…" />}
-          {activity.status === "error" && <EmptyState msg={activity.error} />}
-          {activity.status === "ok" && (() => {
-            const list = extractList(activity.data as Record<string,unknown>);
+        {/* Activities */}
+        <SectionCard title="Promotions & Activities" icon="🎁" status={activities.status} epName={activities.ep}>
+          {activities.status === "loading" && <EmptyState msg="Loading…" />}
+          {activities.status === "error" && <EmptyState msg="Endpoint not available" />}
+          {activities.status === "ok" && (() => {
+            const list = extractList(activities.data as Record<string,unknown>);
             if (!list.length) return <EmptyState msg="No activities" />;
             return (
               <div className="space-y-2">
-                {list.slice(0, 5).map((item, i) => (
+                {list.slice(0, 6).map((item, i) => (
                   <div key={i} className="bg-gradient-to-r from-orange-50 to-pink-50 border border-orange-100 rounded-xl px-3 py-2">
-                    <div className="text-xs font-semibold text-gray-800">{String(item.title ?? item.activityName ?? item.name ?? `Activity ${i + 1}`)}</div>
-                    <div className="text-[10px] text-gray-500 mt-0.5">{String(item.startTime ?? item.beginTime ?? "")} – {String(item.endTime ?? "")}</div>
+                    <div className="text-xs font-semibold text-gray-800">{String(pick(item.title, item.activityName, item.name, item.promotionName, item.subject, `Activity ${i + 1}`))}</div>
+                    <div className="text-[10px] text-gray-500 mt-0.5 line-clamp-1">{String(pick(item.content, item.description, item.desc, item.remark, ""))}</div>
+                    <div className="text-[10px] text-gray-400 mt-0.5">
+                      {String(pick(item.startTime, item.beginTime, item.createTime, ""))} – {String(pick(item.endTime, item.expireTime, ""))}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -774,83 +919,63 @@ export default function ApiCenterPage({ session, onBack }: Props) {
           })()}
         </SectionCard>
 
-        {/* ── Raw API Explorer ── */}
+        {/* Raw API Explorer */}
         <div className="bg-white rounded-2xl shadow-sm mb-6 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-50 flex items-center gap-2">
             <span className="text-lg">🔬</span>
-            <span className="font-bold text-gray-800 text-sm">Raw API Explorer</span>
-            <span className="text-xs text-gray-400 ml-1">Call any endpoint</span>
+            <div className="flex-1">
+              <span className="font-bold text-gray-800 text-sm">Raw API Explorer</span>
+              <span className="text-xs text-gray-400 ml-2">Call any endpoint manually</span>
+            </div>
           </div>
           <div className="px-4 py-3">
             <div className="mb-2">
               <div className="text-xs text-gray-500 mb-1">Endpoint Name</div>
-              <input
-                type="text"
-                value={rawEp}
-                onChange={e => setRawEp(e.target.value)}
-                placeholder="e.g. GetUserInfo, GetVipList, GetActivityList…"
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-indigo-400 font-mono"
-              />
+              <input value={rawEp} onChange={e => setRawEp(e.target.value)}
+                placeholder="e.g. GetUserInfo, GetTeamInfo…"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-indigo-400 font-mono" />
             </div>
             <div className="mb-3">
-              <div className="text-xs text-gray-500 mb-1">Request Body (JSON)</div>
-              <textarea
-                value={rawBody}
-                onChange={e => setRawBody(e.target.value)}
-                rows={3}
-                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-900 bg-gray-50 focus:outline-none focus:border-indigo-400 font-mono resize-none"
-              />
+              <div className="text-xs text-gray-500 mb-1">Body (JSON)</div>
+              <textarea value={rawBody} onChange={e => setRawBody(e.target.value)} rows={3}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs bg-gray-50 focus:outline-none focus:border-indigo-400 font-mono resize-none" />
             </div>
             <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={runRaw}
-                disabled={rawResult.status === "loading" || !rawEp.trim()}
-                className="flex-1 bg-indigo-500 disabled:bg-indigo-300 text-white text-sm font-bold py-2.5 rounded-xl active:opacity-80"
-              >
-                {rawResult.status === "loading" ? "Calling…" : "▶ Call API"}
+              <button onClick={runRaw} disabled={rawBlock.status === "loading" || !rawEp.trim()}
+                className="flex-1 bg-indigo-500 disabled:bg-indigo-300 text-white text-sm font-bold py-2.5 rounded-xl">
+                {rawBlock.status === "loading" ? "Calling…" : "▶ Call API"}
               </button>
-              {rawResult.data && (
-                <button
-                  type="button"
-                  onClick={copyRaw}
-                  className="bg-gray-100 text-gray-600 text-sm font-bold px-4 py-2.5 rounded-xl active:bg-gray-200"
-                >
-                  {copiedRaw ? "✓" : "Copy"}
+              {rawBlock.data && (
+                <button onClick={copyRaw}
+                  className="bg-gray-100 text-gray-600 text-sm font-bold px-4 py-2.5 rounded-xl">
+                  {copied ? "✓" : "Copy"}
                 </button>
               )}
             </div>
-
-            {rawResult.status === "ok" && rawResult.data && (
+            {rawBlock.status === "ok" && rawBlock.data && (
               <div className="bg-gray-900 rounded-xl p-3 max-h-72 overflow-y-auto">
                 <pre className="text-xs text-green-400 whitespace-pre-wrap break-all">
-                  {JSON.stringify(rawResult.data, null, 2)}
+                  {JSON.stringify(rawBlock.data, null, 2)}
                 </pre>
               </div>
             )}
-            {rawResult.status === "error" && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">{rawResult.error}</div>
+            {rawBlock.status === "error" && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">{rawBlock.error}</div>
             )}
-
-            {/* Quick endpoint buttons */}
             <div className="mt-3">
               <div className="text-xs text-gray-400 mb-2">Quick endpoints:</div>
               <div className="flex flex-wrap gap-1.5">
                 {[
-                  "GetUserInfo", "GetVipList", "GetAllwallets", "GetBankCard",
-                  "GetRechargeRecord", "GetWithdrawLog", "BetRecords", "RecordList",
-                  "GetInviteInfo", "GetAgentInfo", "GetTeamInfo", "GetSafeInfo",
-                  "GetSignInfo", "GetNotice", "GetActivityList", "GetRebateInfo",
-                  "GetEmerdList", "GetWithdrawInfo", "GetRechargeTypes", "GetVipUserLevelDetail",
-                  "GetGameList", "GetFriendList", "GetMessageList", "GetTaskList",
-                  "GetPromotionList", "GetBonusRecord", "GetTurnoverRecord",
+                  "GetUserInfo","GetVipUserLevelDetail","GetAllwallets","GetBankCard",
+                  "GetRechargeRecord","GetWithdrawLog","BetRecords","RecordList",
+                  "GetInviteInfo","GetAgentInfo","GetTeamInfo","GetSafeInfo",
+                  "GetSignInfo","GetNotice","GetActivityList","GetRebateInfo",
+                  "GetEmerdList","GetWithdrawInfo","GetRechargeTypes","GetVipList",
+                  "GetGameList","GetFriendList","GetMessageList","GetTaskList",
+                  "GetSubordinateInfo","GetBonusRecord","GetCommission","GetShareInfo",
                 ].map(ep => (
-                  <button
-                    key={ep}
-                    type="button"
-                    onClick={() => { setRawEp(ep); setRawBody("{}"); }}
-                    className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg font-mono active:bg-indigo-100"
-                  >
+                  <button key={ep} onClick={() => { setRawEp(ep); setRawBody("{}"); }}
+                    className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg font-mono active:bg-indigo-100">
                     {ep}
                   </button>
                 ))}
