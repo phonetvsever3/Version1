@@ -790,11 +790,21 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
     "GetLuckyDrawInfo", "GetActivityWheelInfo", "GetSpinInfo",
   ];
 
+  // Server confirmed valid bases: webapi, admin, agent, opera
+  const SPIN_BASES = ["webapi", "admin", "agent", "opera"];
   const SPIN_ENDPOINTS = [
-    "DoTurnTable", "TurnTable", "SpinWheel", "DrawWheel", "LuckyDraw",
-    "DrawTurn", "TurnTableSpin", "SpinTurnTable", "TurnWheelDraw",
-    "GetLuckyDraw", "DoLuckyDraw", "DoSpin", "Spin", "TurnWheelInfo",
-    "DrawLucky", "ActivityDraw", "WheelDraw", "DoWheel",
+    // InvitedWheel-specific (most likely match for GetInvitedWheelInfo)
+    "DoInvitedWheel", "InvitedWheelSpin", "TurnInvitedWheel", "DrawInvitedWheel",
+    "DoInvitedWheelSpin", "InvitedWheelDraw", "SpinInvitedWheel",
+    // Generic turntable
+    "DoTurnTable", "TurnTable", "TurnTableDraw", "TurnTableSpin",
+    // Wheel variants
+    "SpinWheel", "DrawWheel", "WheelDraw", "DoWheel", "WheelSpin",
+    // Lucky draw
+    "LuckyDraw", "DoLuckyDraw", "GetLuckyDraw", "DrawLucky", "LuckyDrawSpin",
+    // Other spin
+    "DrawTurn", "SpinTurnTable", "TurnWheelDraw", "DoSpin", "Spin",
+    "ActivityDraw", "ActivitySpin", "DrawActivity",
   ];
 
   useEffect(() => {
@@ -830,35 +840,53 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
     setSpinning(true);
     setSpinResult(null);
 
-    for (const ep of SPIN_ENDPOINTS) {
-      try {
-        const body: Record<string, unknown> = {};
-        if (selectedBox !== null) body.index = selectedBox;
-        const res = await apiPost(ep, body, session);
-        const msg = String(res.msg ?? res.message ?? "");
-        const m = msg.toLowerCase();
-        if (m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist")) continue;
-        const code = res.code ?? res.Code;
-        const ok = code === 0 || code === 200 || code === "0";
-        setSpinResult({ ok, msg: ok ? `✅ ${msg || "Success!"}` : `⚠️ [${ep}] ${msg}`, data: res });
-        if (ok) {
-          // Refresh wheel info after a successful spin
-          try {
-            const fresh = await apiPost(ep === "DoTurnTable" ? "GetTurnTableInfo" : "GetInvitedWheelInfo", {}, session);
-            setWheelInfo(fresh);
-          } catch { /* ignore */ }
-        }
-        setSpinning(false);
-        return;
-      } catch (e) {
-        const msg = String(e);
-        if (msg.includes("url is not exist") || msg.includes("not exist")) continue;
-        setSpinResult({ ok: false, msg: `❌ ${msg}` });
-        setSpinning(false);
-        return;
+    const auth = buildAuth(session);
+    const body: Record<string, unknown> = {};
+    if (selectedBox !== null) { body.index = selectedBox; body.giftIndex = selectedBox; }
+
+    const isDeadEnd = (m: string) =>
+      m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist") ||
+      m.includes("unknown base") || m.includes("unknown_base") || m.includes("allowed: webapi") ||
+      m.includes("no route") || m.includes("not found");
+
+    // Try every base × every endpoint via the ck-path proxy
+    for (const base of SPIN_BASES) {
+      for (const ep of SPIN_ENDPOINTS) {
+        try {
+          const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: auth,
+              "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+              ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+            },
+            body: JSON.stringify(body),
+          });
+          const text = await res.text();
+          let parsed: Record<string, unknown>;
+          try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { continue; }
+          const msg = String(parsed.msg ?? parsed.message ?? "");
+          if (isDeadEnd(msg.toLowerCase())) continue;
+          const code = parsed.code ?? parsed.Code;
+          const ok = code === 0 || code === 200 || code === "0";
+          setSpinResult({
+            ok,
+            msg: ok ? `✅ [${base}/${ep}] ${msg || "Success!"}` : `⚠️ [${base}/${ep}] ${msg}`,
+            data: parsed,
+          });
+          if (ok) {
+            try {
+              const fresh = await apiPost("GetInvitedWheelInfo", {}, session);
+              setWheelInfo(fresh);
+            } catch { /* ignore */ }
+          }
+          setSpinning(false);
+          return;
+        } catch { /* network error — try next */ }
       }
     }
-    setSpinResult({ ok: false, msg: "❌ No spin endpoint found on this server. The turntable API may require a different auth level." });
+    setSpinResult({ ok: false, msg: "❌ Tried all bases (webapi/admin/agent/opera) × all spin endpoints. The spin API is not publicly accessible with this token." });
     setSpinning(false);
   }
 
