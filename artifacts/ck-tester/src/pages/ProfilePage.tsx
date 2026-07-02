@@ -1495,15 +1495,24 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       return parseApiJson(await res.text(), res.status);
     };
 
-    // Optimistically flip the approved item to state 1 (Success) in local state.
-    // We don't re-fetch from the server because CKLottery may still return state 0
-    // even after a successful approve call.
-    const markApprovedLocally = () => {
-      setDeposits(prev => prev.map(d => {
-        const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
-        if (dNo !== orderNo) return d;
-        return { ...d, state: 1, status: 1, statusText: "Success", statusTip: "Success", statusStr: "Success" };
-      }));
+    // Re-fetch the deposit list and check whether this order's state is now 1 on the server.
+    // Returns the updated item if confirmed, null if still pending.
+    const verifyServerApproved = async (): Promise<Record<string, unknown> | null> => {
+      try {
+        const fresh = await apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session);
+        const items = extractList(fresh);
+        const found = items.find(d => {
+          const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
+          return dNo === orderNo;
+        });
+        if (!found) return null;
+        const newState = found.state ?? found.status;
+        const isSuccess = newState === 1 || newState === "1" ||
+          String(found.statusText ?? found.statusStr ?? "").toLowerCase() === "success";
+        return isSuccess ? found : null;
+      } catch {
+        return null;
+      }
     };
 
     const triedLabels: string[] = [];
@@ -1525,9 +1534,20 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
             lastErr = String(result?.msg ?? result?.message ?? JSON.stringify(result));
             continue;
           }
-          setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
-          markApprovedLocally();
-          return;
+          // Verify the server state actually changed before declaring success
+          const confirmed = await verifyServerApproved();
+          if (confirmed) {
+            setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
+            // Update the deposit list with the fresh server data
+            setDeposits(prev => prev.map(d => {
+              const dNo = String(d.rechargeNumber ?? d.rechargeSNum ?? d.orderNo ?? d.serialNo ?? d.rechargeNo ?? d.id ?? "");
+              return dNo === orderNo ? confirmed : d;
+            }));
+            return;
+          }
+          // Code 0 but state still 0 — this endpoint is a no-op, keep trying
+          lastErr = "Endpoint accepted but state unchanged on server";
+          continue;
         } catch (e) {
           lastErr = String(e);
           if (!isNotExistErr(lastErr.toLowerCase())) break; // non-404 error — stop
