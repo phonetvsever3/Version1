@@ -869,66 +869,78 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
     setSubmitting(true); setSubmitError("");
     const selObj = selected as Record<string, unknown>;
     const groupPayid = Number(selObj._payid ?? selObj.payID ?? 0);
+    const payTypeIDVal = Number(selObj.payTypeID ?? selObj.payTypeId ?? 0);
+    const pasSysNum = Number(selObj.paySysName ?? selObj.sysName ?? 0);
 
-    // Build ordered candidate type values to try.
-    // CKLottery's CreateRechargeOrder "type" field may not match payTypeID —
-    // cascade through candidates until one works (no duplicate-order risk since failures return errors).
-    const seen = new Set<number>();
-    const candidateTypes: number[] = [];
-    function addCandidate(v: unknown) {
-      const n = Number(v);
-      if (Number.isFinite(n) && n > 0 && Number.isInteger(n) && !seen.has(n)) {
-        seen.add(n); candidateTypes.push(n);
-      }
-    }
-    // Priority order: payTypeID → paySysName (e.g. "102") → groupPayid
-    addCandidate(selObj.payTypeID ?? selObj.payTypeId);
-    addCandidate(selObj.paySysName ?? selObj.sysName ?? selObj.sysCode);
-    addCandidate(groupPayid);
-    // Sweep all other integer fields as last-resort candidates
-    for (const v of Object.values(selObj)) {
-      addCandidate(v);
-    }
+    const extras: Record<string, unknown> = {};
+    if (selected.code) extras.rechargeType = selected.code;
+    if (payerName.trim()) extras.payerName = payerName.trim();
+    if (remark.trim()) extras.remark = remark.trim();
 
-    if (candidateTypes.length === 0) {
-      setSubmitError(`Could not determine payment type ID. Keys: ${JSON.stringify(Object.keys(selObj))}`);
-      setSubmitting(false);
-      return;
+    const base = { amount: Number(amount), ReturnUrl: "https://www.cklottery.club/", ...extras };
+
+    // Build a list of distinct payload variants to try in order.
+    // The "type must greater than 0" error persists regardless of the value sent as `type`,
+    // so we also try: different parameter names (payTypeId vs type), with/without payid,
+    // and finally alternate endpoints used by third-party (H88Pay) channels.
+    const variants: Record<string, unknown>[] = [];
+    function addVariant(extra: Record<string, unknown>) {
+      // Deduplicate by JSON key
+      const key = JSON.stringify(Object.keys({ ...base, ...extra }).sort());
+      const vals = JSON.stringify({ ...base, ...extra });
+      if (!variants.some(v => JSON.stringify(v) === vals)) variants.push({ ...base, ...extra });
     }
 
-    const basePayload: Record<string, unknown> = {
-      amount: Number(amount),
-      ReturnUrl: "https://www.cklottery.club/",
-    };
-    if (groupPayid > 0) basePayload.payid = groupPayid;
-    if (selected.code) basePayload.rechargeType = selected.code;
-    if (payerName.trim()) basePayload.payerName = payerName.trim();
-    if (remark.trim()) basePayload.remark = remark.trim();
+    // 1. payTypeId (lowercase d) as the type param — CKLottery backend may differ from API response field name
+    if (payTypeIDVal > 0) {
+      addVariant({ payTypeId: payTypeIDVal, payid: groupPayid });
+      addVariant({ payTypeId: payTypeIDVal });
+    }
+    // 2. type=payTypeID with payid
+    if (payTypeIDVal > 0 && groupPayid > 0) addVariant({ type: payTypeIDVal, payid: groupPayid });
+    // 3. type=payTypeID without payid
+    if (payTypeIDVal > 0) addVariant({ type: payTypeIDVal });
+    // 4. type=paySysNum (e.g. 102) variants
+    if (pasSysNum > 0 && pasSysNum !== payTypeIDVal) {
+      if (groupPayid > 0) addVariant({ type: pasSysNum, payid: groupPayid });
+      addVariant({ type: pasSysNum });
+    }
+    // 5. payid only, no type
+    if (groupPayid > 0) addVariant({ payid: groupPayid });
+    // 6. payid=payTypeID (swap roles)
+    if (payTypeIDVal > 0) addVariant({ payid: payTypeIDVal });
+    // 7. Bare — just amount + ReturnUrl
+    addVariant({});
 
+    const tried: string[] = [];
     let lastErr = "";
-    for (const typeId of candidateTypes) {
+    for (const variant of variants) {
+      const label = JSON.stringify(
+        Object.fromEntries(Object.entries(variant).filter(([k]) => !["amount","ReturnUrl","payerName","remark","rechargeType"].includes(k)))
+      );
+      tried.push(label);
       try {
-        const d = await apiPost("CreateRechargeOrder", { ...basePayload, type: typeId }, session);
+        const d = await apiPost("CreateRechargeOrder", variant, session);
         const data = (d?.data ?? d) as Record<string, unknown>;
         setOrderResult(data && typeof data === "object" ? data : d);
         setSubmitting(false);
         return;
       } catch (e) {
         const msg = String(e);
-        lastErr = `type=${typeId}: ${msg}`;
-        // Only continue trying other type values if this is a type-validation error
-        const isTypeErr = msg.toLowerCase().includes("type") || msg.includes("greater than 0") || msg.toLowerCase().includes("invalid");
-        if (!isTypeErr) { setSubmitError(msg); setSubmitting(false); return; }
+        lastErr = msg;
+        // Stop cascade on auth/network errors; continue on type/validation errors
+        const isRecoverable = msg.toLowerCase().includes("type") || msg.includes("greater than 0") || msg.toLowerCase().includes("invalid") || msg.toLowerCase().includes("param");
+        if (!isRecoverable) { setSubmitError(msg); setSubmitting(false); return; }
       }
     }
 
-    // Final attempt: omit type entirely (payid only)
+    // All variants failed — also try CreateThirdRechargeOrder (used by external gateway methods)
     try {
-      const d = await apiPost("CreateRechargeOrder", basePayload, session);
+      const d = await apiPost("CreateThirdRechargeOrder", { ...base, type: payTypeIDVal, payid: groupPayid }, session);
       const data = (d?.data ?? d) as Record<string, unknown>;
       setOrderResult(data && typeof data === "object" ? data : d);
     } catch (e) {
-      setSubmitError(`${String(e)}\n\nTried type values: ${candidateTypes.join(", ")}`);
+      setSubmitError(`${lastErr}\n\nTried ${tried.length} payload variants + CreateThirdRechargeOrder.`);
     } finally {
       setSubmitting(false);
     }
