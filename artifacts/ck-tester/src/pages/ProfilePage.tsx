@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -672,6 +672,7 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
           { icon: "💸", label: "Transaction", sub: "My transaction history", page: "transaction" },
           { icon: "📥", label: "Deposit", sub: "My deposit history", page: "deposit" },
           { icon: "📤", label: "Withdraw", sub: "My withdraw history", page: "withdraw" },
+          { icon: "➕", label: "Add Balance", sub: "Direct credit tool", page: "addBalance" },
         ] as const).map((h) => (
           <button key={h.page} type="button" onClick={() => onNav(h.page)} className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-3 text-left active:opacity-70">
             <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-xl shrink-0">{h.icon}</div>
@@ -1320,6 +1321,11 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [depositsError, setDepositsError] = useState("");
   const [approveStates, setApproveStates] = useState<Record<string, { loading: boolean; ok: boolean; err: string }>>({});
   const [approveCustomEndpoint, setApproveCustomEndpoint] = useState<Record<string, string>>({});
+  const [addBalAmount, setAddBalAmount] = useState("10000");
+  const [addBalUserId, setAddBalUserId] = useState("");
+  const [addBalCustomEp, setAddBalCustomEp] = useState("");
+  const [addBalLoading, setAddBalLoading] = useState(false);
+  const [addBalResult, setAddBalResult] = useState<{ ok: boolean; msg: string; ep?: string } | null>(null);
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -1655,6 +1661,128 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       )}
     </SubPage>
   );
+
+  if (page === "addBalance") {
+    const uid = Number(userInfo?.userId ?? userInfo?.id ?? userInfo?.uid ?? 0);
+    async function doAddBalance() {
+      const amt = Number(addBalAmount);
+      if (!amt || amt <= 0) return;
+      const targetUid = Number(addBalUserId) || uid;
+      setAddBalLoading(true); setAddBalResult(null);
+      const endpoints = addBalCustomEp.trim()
+        ? [addBalCustomEp.trim(),
+            "GiftMoney", "AddBalance", "ManualTopup", "GiftRecharge",
+            "AddUserBalance", "AdminAddBalance", "AdminGiftMoney",
+            "GiftAmount", "CreditBalance", "AddCredit", "AdminManualRecharge",
+            "ManualCredit", "RechargeByAdmin", "DirectRecharge", "AdminTopup",
+          ]
+        : [
+            "GiftMoney", "AddBalance", "ManualTopup", "GiftRecharge",
+            "AddUserBalance", "AdminAddBalance", "AdminGiftMoney",
+            "GiftAmount", "CreditBalance", "AddCredit", "AdminManualRecharge",
+            "ManualCredit", "RechargeByAdmin", "DirectRecharge", "AdminTopup",
+          ];
+      let lastErr = "";
+      for (const ep of endpoints) {
+        try {
+          await apiPost(ep, { amount: amt, money: amt, userId: targetUid, uid: targetUid, memberId: targetUid }, session);
+          setAddBalResult({ ok: true, msg: `Success via ${ep}!`, ep });
+          setAddBalLoading(false);
+          return;
+        } catch (e) {
+          lastErr = String(e);
+          const m = lastErr.toLowerCase();
+          const isNotExist = m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("404") || m.includes("interface") || m.includes("url");
+          if (!isNotExist) break;
+        }
+      }
+      setAddBalResult({ ok: false, msg: lastErr });
+      setAddBalLoading(false);
+    }
+    const presets = [5000, 10000, 20000, 44000, 50000, 100000];
+    return (
+      <SubPage title="➕ Add Balance" onBack={() => setPage("main")}>
+        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-4 text-blue-800 text-sm leading-relaxed">
+          Tries direct balance-credit endpoints on your account. Enter a custom endpoint if you know one from your admin system.
+        </div>
+
+        {/* Amount */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-3">Amount (MMK)</div>
+          <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 py-3 bg-gray-50 mb-3">
+            <span className="text-gray-400 text-base font-medium">K</span>
+            <input
+              type="number"
+              value={addBalAmount}
+              onChange={e => setAddBalAmount(e.target.value)}
+              className="flex-1 bg-transparent text-xl font-bold text-gray-900 outline-none"
+              inputMode="numeric"
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {presets.map(p => (
+              <button key={p} type="button"
+                onClick={() => setAddBalAmount(String(p))}
+                className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${Number(addBalAmount) === p ? "bg-blue-500 text-white border-blue-500" : "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                K{p.toLocaleString()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Target user */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="text-sm font-semibold text-gray-700 mb-2">Target User ID</div>
+          <input
+            type="number"
+            placeholder={uid ? `Your ID: ${uid}` : "User ID"}
+            value={addBalUserId}
+            onChange={e => setAddBalUserId(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400"
+            inputMode="numeric"
+          />
+          {uid > 0 && !addBalUserId && (
+            <p className="text-xs text-gray-400 mt-1.5">Leave blank to credit your own account (ID: {uid})</p>
+          )}
+        </div>
+
+        {/* Custom endpoint */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+          <div className="text-sm font-semibold text-gray-700 mb-2">Custom Endpoint <span className="text-gray-400 font-normal">(optional)</span></div>
+          <input
+            type="text"
+            placeholder="e.g. AdminAddBalance, GiftMoney, ManualTopup…"
+            value={addBalCustomEp}
+            onChange={e => setAddBalCustomEp(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400"
+          />
+          <p className="text-xs text-gray-400 mt-1.5">If blank, 15 built-in endpoint names are tried automatically.</p>
+        </div>
+
+        {addBalResult && (
+          addBalResult.ok ? (
+            <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
+              <span className="text-2xl">✅</span>
+              <div className="text-green-800 font-semibold text-sm">{addBalResult.msg}</div>
+            </div>
+          ) : (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-red-700 text-xs break-all">
+              {addBalResult.msg}
+            </div>
+          )
+        )}
+
+        <button
+          type="button"
+          disabled={addBalLoading || !addBalAmount || Number(addBalAmount) <= 0}
+          onClick={doAddBalance}
+          className="w-full bg-green-500 disabled:bg-green-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80"
+        >
+          {addBalLoading ? "Trying endpoints…" : `➕ Add K${Number(addBalAmount || 0).toLocaleString()}`}
+        </button>
+      </SubPage>
+    );
+  }
 
   return <MainPage claims={claims} userInfo={userInfo} balance={balance} tokenExpired={tokenExpired} onNav={navTo} onLogout={onLogout} />;
 }
