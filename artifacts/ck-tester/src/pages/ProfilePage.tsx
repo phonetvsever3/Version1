@@ -1326,6 +1326,9 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [addBalCustomEp, setAddBalCustomEp] = useState("");
   const [addBalLoading, setAddBalLoading] = useState(false);
   const [addBalResult, setAddBalResult] = useState<{ ok: boolean; msg: string; ep?: string } | null>(null);
+  const [scanRunning, setScanRunning] = useState(false);
+  const [scanResults, setScanResults] = useState<{ ep: string; exists: boolean; msg: string }[]>([]);
+  const [scanDone, setScanDone] = useState(false);
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -1664,65 +1667,148 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
   if (page === "addBalance") {
     const uid = Number(userInfo?.userId ?? userInfo?.id ?? userInfo?.uid ?? 0);
+
+    // All endpoint candidates to probe — recharge/admin/balance related
+    const SCAN_ENDPOINTS = [
+      // Recharge approval
+      "ConfirmRecharge","ManualRechargeSuccess","RechargeSuccess","AdminConfirmRecharge",
+      "RechargeConfirm","AuditRecharge","PassRecharge","ApproveRecharge","RechargePass",
+      "ManualRecharge","AdminRecharge","RechargeApprove","ConfirmDeposit","AdminApproveRecharge",
+      "RechargeAudit","RechargeCheck","RechargeVerify","RechargeComplete","RechargeFinish",
+      "RechargeOk","RechargeApproved","PassDeposit","AuditDeposit","DepositApprove",
+      // Balance add/gift
+      "GiftMoney","AddBalance","ManualTopup","GiftRecharge","AddUserBalance",
+      "AdminAddBalance","AdminGiftMoney","GiftAmount","CreditBalance","AddCredit",
+      "AdminManualRecharge","ManualCredit","RechargeByAdmin","DirectRecharge","AdminTopup",
+      "AddMoney","CreditMoney","BonusMoney","GiftBonus","AddBonus",
+      "AdminCredit","AdminTopUp","TopupBalance","DepositBalance","ManualDeposit",
+      // User management
+      "UpdateUserBalance","SetUserBalance","ModifyBalance","AdjustBalance",
+      "AdminUpdateBalance","AdminSetBalance","AdminModifyBalance","ChangeBalance",
+      // Transaction / order
+      "CreateManualOrder","AdminCreateOrder","ManualOrder","AdminOrder",
+      "CreateGiftOrder","GiftOrder","BonusOrder","AdminBonusOrder",
+      // Agent / transfer
+      "AgentTransfer","TransferMoney","AgentAddBalance","AgentGift",
+      "AgentCredit","AgentTopup","TransferToUser","SendMoney",
+      // Misc admin
+      "AdminOperation","AdminAction","AdminRechargeManual","SystemRecharge",
+      "SystemAddBalance","BackendRecharge","BackendAddBalance","OperatorRecharge",
+    ];
+
+    async function runScan() {
+      setScanRunning(true); setScanResults([]); setScanDone(false);
+      const results: { ep: string; exists: boolean; msg: string }[] = [];
+      for (const ep of SCAN_ENDPOINTS) {
+        try {
+          await apiPost(ep, { amount: 1 }, session);
+          results.push({ ep, exists: true, msg: "success" });
+        } catch (e) {
+          const msg = String(e);
+          const m = msg.toLowerCase();
+          // "Url is not exist" or similar = endpoint doesn't exist on this API
+          const notExist = m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("no such");
+          results.push({ ep, exists: !notExist, msg });
+        }
+        // Update live as we go
+        setScanResults([...results]);
+      }
+      setScanRunning(false); setScanDone(true);
+    }
+
     async function doAddBalance() {
       const amt = Number(addBalAmount);
       if (!amt || amt <= 0) return;
       const targetUid = Number(addBalUserId) || uid;
       setAddBalLoading(true); setAddBalResult(null);
-      const endpoints = addBalCustomEp.trim()
-        ? [addBalCustomEp.trim(),
-            "GiftMoney", "AddBalance", "ManualTopup", "GiftRecharge",
-            "AddUserBalance", "AdminAddBalance", "AdminGiftMoney",
-            "GiftAmount", "CreditBalance", "AddCredit", "AdminManualRecharge",
-            "ManualCredit", "RechargeByAdmin", "DirectRecharge", "AdminTopup",
-          ]
-        : [
-            "GiftMoney", "AddBalance", "ManualTopup", "GiftRecharge",
-            "AddUserBalance", "AdminAddBalance", "AdminGiftMoney",
-            "GiftAmount", "CreditBalance", "AddCredit", "AdminManualRecharge",
-            "ManualCredit", "RechargeByAdmin", "DirectRecharge", "AdminTopup",
+      const existingEndpoints = scanResults.filter(r => r.exists).map(r => r.ep);
+      const customList = addBalCustomEp.trim() ? [addBalCustomEp.trim()] : [];
+      const balanceEps = existingEndpoints.length > 0
+        ? [...customList, ...existingEndpoints]
+        : [...customList,
+            "GiftMoney","AddBalance","ManualTopup","GiftRecharge","AddUserBalance",
+            "AdminAddBalance","AdminGiftMoney","GiftAmount","CreditBalance","AddCredit",
+            "AdminManualRecharge","ManualCredit","RechargeByAdmin","DirectRecharge","AdminTopup",
           ];
       let lastErr = "";
-      for (const ep of endpoints) {
+      for (const ep of balanceEps) {
         try {
           await apiPost(ep, { amount: amt, money: amt, userId: targetUid, uid: targetUid, memberId: targetUid }, session);
-          setAddBalResult({ ok: true, msg: `Success via ${ep}!`, ep });
+          setAddBalResult({ ok: true, msg: `✅ Success via "${ep}"!`, ep });
           setAddBalLoading(false);
           return;
         } catch (e) {
           lastErr = String(e);
           const m = lastErr.toLowerCase();
-          const isNotExist = m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("404") || m.includes("interface") || m.includes("url");
+          const isNotExist = m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("404") || m.includes("url");
           if (!isNotExist) break;
         }
       }
       setAddBalResult({ ok: false, msg: lastErr });
       setAddBalLoading(false);
     }
+
+    const existingEps = scanResults.filter(r => r.exists);
     const presets = [5000, 10000, 20000, 44000, 50000, 100000];
+
     return (
       <SubPage title="➕ Add Balance" onBack={() => setPage("main")}>
-        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 mb-4 text-blue-800 text-sm leading-relaxed">
-          Tries direct balance-credit endpoints on your account. Enter a custom endpoint if you know one from your admin system.
+
+        {/* ── SCANNER ── */}
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <div className="text-sm font-semibold text-gray-800">🔍 Endpoint Scanner</div>
+              <div className="text-xs text-gray-400 mt-0.5">Probes {SCAN_ENDPOINTS.length} endpoints — finds which ones exist</div>
+            </div>
+            <button
+              type="button"
+              disabled={scanRunning}
+              onClick={runScan}
+              className="bg-blue-500 disabled:bg-blue-300 text-white text-xs font-bold px-4 py-2 rounded-xl active:opacity-80"
+            >
+              {scanRunning ? "Scanning…" : scanDone ? "Re-scan" : "Scan Now"}
+            </button>
+          </div>
+
+          {scanRunning && (
+            <div className="text-xs text-gray-500 mb-2">
+              {scanResults.length}/{SCAN_ENDPOINTS.length} checked…
+            </div>
+          )}
+
+          {scanResults.length > 0 && (
+            <div className="space-y-1 max-h-48 overflow-y-auto mt-2">
+              {existingEps.length > 0 && (
+                <div className="text-xs font-semibold text-green-600 mb-1">✅ Endpoints that EXIST ({existingEps.length}):</div>
+              )}
+              {existingEps.map(r => (
+                <div key={r.ep} className="flex items-start gap-2 bg-green-50 rounded-lg px-3 py-1.5">
+                  <span className="text-green-500 text-xs font-bold shrink-0">EXISTS</span>
+                  <div className="min-w-0">
+                    <span className="text-xs font-mono font-bold text-green-800">{r.ep}</span>
+                    <div className="text-xs text-green-600 break-all leading-tight">{r.msg.slice(0, 80)}</div>
+                  </div>
+                </div>
+              ))}
+              {scanDone && existingEps.length === 0 && (
+                <div className="text-xs text-gray-500 italic">No matching endpoints found yet. Try again after logging in as admin.</div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Amount */}
+        {/* ── ADD BALANCE ── */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
           <div className="text-sm font-semibold text-gray-700 mb-3">Amount (MMK)</div>
           <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 py-3 bg-gray-50 mb-3">
             <span className="text-gray-400 text-base font-medium">K</span>
-            <input
-              type="number"
-              value={addBalAmount}
-              onChange={e => setAddBalAmount(e.target.value)}
-              className="flex-1 bg-transparent text-xl font-bold text-gray-900 outline-none"
-              inputMode="numeric"
-            />
+            <input type="number" value={addBalAmount} onChange={e => setAddBalAmount(e.target.value)}
+              className="flex-1 bg-transparent text-xl font-bold text-gray-900 outline-none" inputMode="numeric" />
           </div>
           <div className="grid grid-cols-3 gap-2">
             {presets.map(p => (
-              <button key={p} type="button"
-                onClick={() => setAddBalAmount(String(p))}
+              <button key={p} type="button" onClick={() => setAddBalAmount(String(p))}
                 className={`py-2 rounded-xl text-sm font-semibold border transition-colors ${Number(addBalAmount) === p ? "bg-blue-500 text-white border-blue-500" : "bg-gray-50 text-gray-700 border-gray-200"}`}>
                 K{p.toLocaleString()}
               </button>
@@ -1730,54 +1816,44 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
           </div>
         </div>
 
-        {/* Target user */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
           <div className="text-sm font-semibold text-gray-700 mb-2">Target User ID</div>
-          <input
-            type="number"
-            placeholder={uid ? `Your ID: ${uid}` : "User ID"}
-            value={addBalUserId}
+          <input type="number" placeholder={uid ? `Your ID: ${uid}` : "User ID"} value={addBalUserId}
             onChange={e => setAddBalUserId(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400"
-            inputMode="numeric"
-          />
-          {uid > 0 && !addBalUserId && (
-            <p className="text-xs text-gray-400 mt-1.5">Leave blank to credit your own account (ID: {uid})</p>
+            inputMode="numeric" />
+          {uid > 0 && !addBalUserId && <p className="text-xs text-gray-400 mt-1.5">Leave blank to credit your own account (ID: {uid})</p>}
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+          <div className="text-sm font-semibold text-gray-700 mb-2">Custom Endpoint <span className="text-gray-400 font-normal">(optional)</span></div>
+          <input type="text" placeholder="Endpoint name from scanner results or admin docs"
+            value={addBalCustomEp} onChange={e => setAddBalCustomEp(e.target.value)}
+            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400" />
+          {existingEps.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {existingEps.map(r => (
+                <button key={r.ep} type="button" onClick={() => setAddBalCustomEp(r.ep)}
+                  className="text-xs bg-green-100 text-green-700 rounded-lg px-2 py-0.5 font-mono active:opacity-70">
+                  {r.ep}
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
-        {/* Custom endpoint */}
-        <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
-          <div className="text-sm font-semibold text-gray-700 mb-2">Custom Endpoint <span className="text-gray-400 font-normal">(optional)</span></div>
-          <input
-            type="text"
-            placeholder="e.g. AdminAddBalance, GiftMoney, ManualTopup…"
-            value={addBalCustomEp}
-            onChange={e => setAddBalCustomEp(e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400"
-          />
-          <p className="text-xs text-gray-400 mt-1.5">If blank, 15 built-in endpoint names are tried automatically.</p>
-        </div>
-
         {addBalResult && (
-          addBalResult.ok ? (
-            <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
-              <span className="text-2xl">✅</span>
-              <div className="text-green-800 font-semibold text-sm">{addBalResult.msg}</div>
-            </div>
-          ) : (
-            <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-red-700 text-xs break-all">
-              {addBalResult.msg}
-            </div>
-          )
+          addBalResult.ok
+            ? <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
+                <span className="text-2xl">✅</span>
+                <div className="text-green-800 font-semibold text-sm">{addBalResult.msg}</div>
+              </div>
+            : <div className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-4 text-red-700 text-xs break-all">{addBalResult.msg}</div>
         )}
 
-        <button
-          type="button"
-          disabled={addBalLoading || !addBalAmount || Number(addBalAmount) <= 0}
+        <button type="button" disabled={addBalLoading || !addBalAmount || Number(addBalAmount) <= 0}
           onClick={doAddBalance}
-          className="w-full bg-green-500 disabled:bg-green-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80"
-        >
+          className="w-full bg-green-500 disabled:bg-green-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80 mb-16">
           {addBalLoading ? "Trying endpoints…" : `➕ Add K${Number(addBalAmount || 0).toLocaleString()}`}
         </button>
       </SubPage>
