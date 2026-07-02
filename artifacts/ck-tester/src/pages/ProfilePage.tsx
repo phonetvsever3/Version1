@@ -102,18 +102,36 @@ function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
     if (Array.isArray(obj)) return obj as Record<string, unknown>[];
     if (obj && typeof obj === "object") {
       const o = obj as Record<string, unknown>;
-      // Cast wide net over all known CKLottery key names for payment type lists
+      // Cast wide net over all known CKLottery key names for payment type lists.
+      // NOTE: "rechargetypelist" is all-lowercase per actual API response.
       for (const key of [
+        "rechargetypelist", "rechargeTypelist", "rechargeTypeList",
         "typelist", "typeList", "payTypelist", "payTypeList",
-        "rechargeTypes", "rechargeTypeList", "rechargeTypelist",
-        "payTypes", "payTypeData",
+        "rechargeTypes", "payTypes", "payTypeData",
         "list", "records", "items", "data", "result", "content",
       ]) {
-        if (Array.isArray(o[key])) return o[key] as Record<string, unknown>[];
+        if (Array.isArray(o[key]) && (o[key] as unknown[]).length > 0) return o[key] as Record<string, unknown>[];
       }
     }
   }
   return [];
+}
+
+/** Collect all payment method arrays (e-wallet, bank, USDT, third-party) from a GetRechargeTypes response. */
+function extractAllMethods(d: Record<string, unknown>): Record<string, unknown>[] {
+  const data = (d?.data ?? d) as Record<string, unknown>;
+  const out: Record<string, unknown>[] = [];
+  const listKeys = ["rechargetypelist", "rechargeTypelist", "typelist", "typeList",
+    "banklist", "bankList", "localUsdtlist", "localUsdtList", "thirdPayBankList", "thirdPayBanklist"];
+  for (const key of listKeys) {
+    const arr = data?.[key];
+    if (Array.isArray(arr) && arr.length > 0) {
+      for (const item of arr as Record<string, unknown>[]) {
+        out.push({ ...item, _sourceKey: key });
+      }
+    }
+  }
+  return out;
 }
 
 // ─── Token expiry banner ───────────────────────────────────────────────────────
@@ -775,11 +793,15 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   async function loadMethods() {
     setMethodsLoading(true); setMethodsError(""); setUsingFallback(false); setMethodsRawDebug("");
     let list: DepositMethod[] = [];
-    // Direct browser call — only path that bypasses Cloudflare
-    // GetRechargeTypes requires a "payid" param > 0. Try values 1–5 until one returns methods.
+    // Direct browser call — only path that bypasses Cloudflare.
+    // GetRechargeTypes requires "payid" > 0. We don't know the correct value per-account,
+    // so try a range of known/common values and use the first that returns actual methods.
     const auth = session.tokenHeader ? `${session.tokenHeader} ${session.token}`.trim() : session.token;
+    // Try values 1-20 plus historically-known fallback IDs
+    const payidsToTry = [...Array.from({length: 20}, (_, i) => i + 1), 157, 158, 160, 161, 18, 17, 20, 21];
     let lastDebug = "";
-    for (const payid of [1, 2, 3, 4, 5]) {
+    let foundPayid = 0;
+    for (const payid of payidsToTry) {
       try {
         const signRes = await fetch("/api/proxy/sign", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payid }),
@@ -797,24 +819,28 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
           body: JSON.stringify(signed),
         });
         const text = await res.text();
-        lastDebug = `payid=${payid}: ${text.slice(0, 300)}`;
+        lastDebug = `payid=${payid}: ${text.slice(0, 400)}`;
         setMethodsRawDebug(lastDebug);
         const parsed = JSON.parse(text) as Record<string, unknown>;
-        if ((parsed.code === 0 || parsed.code === 200) || parsed.code === undefined) {
-          const found = extractList(parsed) as DepositMethod[];
+        if (parsed.code === 0 || parsed.code === 200 || parsed.code === undefined) {
+          // Use extractAllMethods to collect from all list types in the response
+          const found = extractAllMethods(parsed) as DepositMethod[];
           if (found.length > 0) {
-            // Tag each method with the payid that worked, for use in CreateRechargeOrder
+            foundPayid = payid;
             list = found.map(m => ({ ...m, _payid: payid }));
             break;
           }
+          // code:0 but all lists empty — continue trying other payids
         }
-        // Non-zero code with a different error — keep trying other payid values
+        // Non-zero code — try next payid
       } catch {
         // network/parse error — try next payid
       }
     }
     if (list.length === 0) {
-      setMethodsError(`GetRechargeTypes payid 1–5 all failed. Last: ${lastDebug.slice(0, 300)}`);
+      setMethodsError(`No payment methods found (tried payid 1–20 + known IDs). Last response: ${lastDebug.slice(0, 350)}`);
+    } else {
+      setMethodsRawDebug(`✓ payid=${foundPayid} returned ${list.length} method(s)`);
     }
     if (list.length > 0) {
       setMethods(list);
