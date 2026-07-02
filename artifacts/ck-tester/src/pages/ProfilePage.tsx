@@ -10,7 +10,7 @@ interface ProfilePageProps {
   onUpdateSession: (updates: Partial<UserSession>) => void;
 }
 
-type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData";
+type Page = "home" | "main" | "vip" | "wallet" | "deposit" | "depositNew" | "withdraw" | "game" | "transaction" | "addBalance" | "tokenInfo" | "editData" | "wingo";
 
 function buildAuth(s: UserSession) {
   return `${(s.tokenHeader || "Bearer").trim()} ${s.token}`.trim();
@@ -332,6 +332,31 @@ const SLOT_PROVIDERS = [
   { label: "JILI GAME", icon: "🎳" },
 ];
 
+function wingoNumberProps(nStr: string) {
+  const n = Number(nStr);
+  const isBig = n >= 5;
+  const isGreen = n === 1 || n === 3 || n === 7 || n === 9;
+  const isRed = n === 2 || n === 4 || n === 6 || n === 8;
+  const isViolet = n === 0 || n === 5;
+  return { isBig, isGreen, isRed, isViolet };
+}
+
+function WinGoBall({ n }: { n: string }) {
+  const { isGreen, isRed, isViolet } = wingoNumberProps(n);
+  const bg = isViolet
+    ? "bg-gradient-to-br from-red-500 to-violet-600"
+    : isGreen
+    ? "bg-green-500"
+    : isRed
+    ? "bg-red-500"
+    : "bg-gray-400";
+  return (
+    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 ${bg}`}>
+      {n}
+    </div>
+  );
+}
+
 function GameHomePage({
   onNav,
   onLogout,
@@ -392,13 +417,17 @@ function GameHomePage({
       {(activeCat === "Lottery" || activeCat === "Popular") && (
         <div className="mx-4 mt-3">
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-            <div className="bg-gradient-to-r from-purple-500 to-blue-500 px-4 py-3 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => onNav("wingo")}
+              className="w-full bg-gradient-to-r from-purple-500 to-blue-500 px-4 py-3 flex items-center justify-between active:opacity-90"
+            >
               <div className="flex items-center gap-2">
                 <span className="text-white text-xl">🎱</span>
                 <span className="text-white font-bold">WinGo Lottery</span>
               </div>
-              <span className="text-white/70 text-xs">Recent Results</span>
-            </div>
+              <span className="text-white/80 text-xs flex items-center gap-1">Play &amp; View All <span className="text-sm">›</span></span>
+            </button>
             {wingoLoading ? (
               <div className="py-6 text-center text-gray-400 text-sm">Loading results...</div>
             ) : wingoResults.length === 0 ? (
@@ -482,6 +511,202 @@ function GameHomePage({
           <span className="text-2xl">👤</span>
           <span className="text-[10px] text-gray-500">Account</span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── WinGo Game Page (full data: countdown, latest result, bet panel, full history) ───
+const WINGO_DURATION_S = 60;
+const WINGO_TABS = [
+  { key: "wingo1", label: "WinGo 1Min", secs: 60 },
+  { key: "wingo3", label: "WinGo 3Min", secs: 180 },
+  { key: "wingo5", label: "WinGo 5Min", secs: 300 },
+  { key: "wingo10", label: "WinGo 10Min", secs: 600 },
+];
+
+function WinGoPage({
+  results,
+  loading,
+  loadingMore,
+  error,
+  hasMore,
+  onLoadMore,
+  onRetry,
+  onCfFix,
+  onBack,
+}: {
+  results: Record<string, unknown>[];
+  loading: boolean;
+  loadingMore: boolean;
+  error: string;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  onRetry: () => void;
+  onCfFix: (val: string) => void;
+  onBack: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState("wingo1");
+  const [selected, setSelected] = useState<{ key: string; label: string } | null>(null);
+  const durationS = WINGO_TABS.find((t) => t.key === activeTab)?.secs ?? WINGO_DURATION_S;
+  const [secondsLeft, setSecondsLeft] = useState(() => durationS - (Math.floor(Date.now() / 1000) % durationS));
+
+  useEffect(() => {
+    setSecondsLeft(durationS - (Math.floor(Date.now() / 1000) % durationS));
+    const t = setInterval(() => {
+      setSecondsLeft(durationS - (Math.floor(Date.now() / 1000) % durationS));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [durationS]);
+
+  const latest = results[0];
+  const latestNum = latest ? String(latest.number ?? latest.result ?? "") : "";
+  const latestPeriod = latest ? String(latest.period ?? latest.issueNumber ?? "—") : "—";
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col pb-6">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-purple-600 to-blue-600 px-4 pt-12 pb-4 flex items-center gap-3">
+        <button onClick={onBack} className="text-white text-3xl leading-none w-8 flex-shrink-0">‹</button>
+        <h1 className="text-white font-bold text-lg flex items-center gap-2">🎱 WinGo Lottery</h1>
+      </div>
+
+      {/* Duration tabs */}
+      <div className="mx-4 mt-3 grid grid-cols-4 gap-2">
+        {WINGO_TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setActiveTab(t.key)}
+            className={`text-xs font-semibold py-2 rounded-xl transition-all ${
+              activeTab === t.key ? "bg-purple-600 text-white shadow" : "bg-white text-gray-500"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Countdown + latest result */}
+      <div className="mx-4 mt-3 bg-gradient-to-br from-purple-600 via-blue-600 to-purple-500 rounded-2xl p-5 shadow-lg text-white">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-white/70 text-xs">Current Period</div>
+            <div className="font-bold text-base tracking-wide">{latestPeriod}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-white/70 text-xs">Time Left</div>
+            <div className="font-mono font-bold text-2xl">{mm}:{ss}</div>
+          </div>
+        </div>
+        {latestNum && (
+          <div className="flex items-center gap-2 justify-center bg-white/10 rounded-xl py-3">
+            {latestNum.split("").map((n, i) => <WinGoBall key={i} n={n} />)}
+          </div>
+        )}
+      </div>
+
+      {/* Bet selectors (color / size) */}
+      <div className="mx-4 mt-3 bg-white rounded-2xl shadow-sm p-4">
+        <div className="text-gray-700 font-bold text-sm mb-3">Select Prediction</div>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {[
+            { key: "green", label: "Green", cls: "bg-green-500" },
+            { key: "violet", label: "Violet", cls: "bg-gradient-to-br from-red-500 to-violet-600" },
+            { key: "red", label: "Red", cls: "bg-red-500" },
+          ].map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setSelected({ key: c.key, label: c.label })}
+              className={`${c.cls} text-white text-sm font-bold py-2.5 rounded-xl transition-all ${selected?.key === c.key ? "ring-2 ring-offset-2 ring-blue-400" : ""}`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          {[
+            { key: "big", label: "BIG" },
+            { key: "small", label: "SMALL" },
+          ].map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setSelected({ key: s.key, label: s.label })}
+              className={`text-sm font-bold py-2.5 rounded-xl border-2 transition-all ${
+                selected?.key === s.key ? "border-blue-500 bg-blue-50 text-blue-600" : "border-gray-200 text-gray-600"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-5 gap-2">
+          {Array.from({ length: 10 }, (_, n) => String(n)).map((n) => (
+            <button key={n} type="button" onClick={() => setSelected({ key: `num${n}`, label: n })}>
+              <div className={selected?.key === `num${n}` ? "ring-2 ring-offset-2 ring-blue-400 rounded-full" : ""}>
+                <WinGoBall n={n} />
+              </div>
+            </button>
+          ))}
+        </div>
+        {selected && (
+          <div className="mt-3 text-center text-xs text-gray-500">
+            Selected: <span className="font-semibold text-gray-800">{selected.label}</span> — display only, this tester does not place bets.
+          </div>
+        )}
+      </div>
+
+      {/* Full result history */}
+      <div className="mx-4 mt-3">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-1 h-5 bg-purple-500 rounded-full" />
+          <span className="text-gray-800 font-bold">Game History (All Data)</span>
+        </div>
+        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          {(loading || error || results.length === 0) ? (
+            <ListState loading={loading} error={error} empty={results.length === 0} onCfFix={onCfFix} onRetry={onRetry} />
+          ) : (
+            <>
+              <div className="grid grid-cols-4 gap-1 px-4 py-2 bg-gray-50 text-[11px] font-semibold text-gray-400 uppercase">
+                <span>Period</span>
+                <span className="col-span-2">Number</span>
+                <span className="text-right">Size</span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {results.map((r, i) => {
+                  const numStr = String(r.number ?? r.result ?? "");
+                  const primary = numStr.slice(-1) || numStr;
+                  const { isBig } = wingoNumberProps(primary);
+                  return (
+                    <div key={i} className="px-4 py-2.5 grid grid-cols-4 gap-1 items-center">
+                      <div className="text-xs text-gray-500 truncate">{String(r.period ?? r.issueNumber ?? `#${i + 1}`)}</div>
+                      <div className="col-span-2 flex items-center gap-1">
+                        {numStr.split("").map((n, j) => <WinGoBall key={j} n={n} />)}
+                      </div>
+                      <div className={`text-xs font-semibold text-right ${isBig ? "text-orange-500" : "text-blue-500"}`}>
+                        {isBig ? "Big" : "Small"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  disabled={loadingMore}
+                  className="w-full py-3 text-sm font-medium text-blue-500 active:opacity-70 disabled:opacity-40"
+                >
+                  {loadingMore ? "Loading..." : "Load More"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1412,6 +1637,13 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [transactionsError, setTransactionsError] = useState("");
   const [wingoResults, setWingoResults] = useState<Record<string, unknown>[]>([]);
   const [wingoLoading, setWingoLoading] = useState(false);
+  const [wingoAll, setWingoAll] = useState<Record<string, unknown>[]>([]);
+  const [wingoAllLoading, setWingoAllLoading] = useState(false);
+  const [wingoAllLoadingMore, setWingoAllLoadingMore] = useState(false);
+  const [wingoAllError, setWingoAllError] = useState("");
+  const [wingoAllPage, setWingoAllPage] = useState(1);
+  const [wingoAllHasMore, setWingoAllHasMore] = useState(true);
+  const wingoAllLoadingRef = useRef(false);
   const [reloadKey, setReloadKey] = useState(0);
   // editData page state (hoisted to avoid hooks-in-conditional violation)
   const [edProbing, setEdProbing] = useState(false);
@@ -1482,6 +1714,28 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .catch(() => setWingoResults([]))
       .finally(() => setWingoLoading(false));
   }, []);
+
+  const WINGO_PAGE_SIZE = 20;
+
+  const loadWingoAll = useCallback((pg = 1, append = false) => {
+    if (wingoAllLoadingRef.current) return;
+    wingoAllLoadingRef.current = true;
+    if (append) { setWingoAllLoadingMore(true); }
+    else { setWingoAllLoading(true); setWingoAllError(""); setWingoAllHasMore(true); }
+    apiPost("GetEmerdList", { typeId: 1, pageIndex: pg, pageSize: WINGO_PAGE_SIZE }, session)
+      .then((d) => {
+        const list = extractList(d);
+        setWingoAll(prev => append ? [...prev, ...list] : list);
+        setWingoAllHasMore(list.length >= WINGO_PAGE_SIZE);
+        setWingoAllPage(pg);
+      })
+      .catch((e) => { if (!append) setWingoAllError(String(e)); })
+      .finally(() => { wingoAllLoadingRef.current = false; setWingoAllLoading(false); setWingoAllLoadingMore(false); });
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadMoreWingoAll = useCallback(() => {
+    if (wingoAllHasMore && !wingoAllLoadingRef.current) loadWingoAll(wingoAllPage + 1, true);
+  }, [wingoAllHasMore, wingoAllPage, loadWingoAll]);
 
   const loadWallets = useCallback(() => {
     setWalletsLoading(true); setWalletsError("");
@@ -1836,8 +2090,8 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   function handleCfFix(cfVal: string) {
     onUpdateSession({ cfClearance: cfVal });
     // Reset all data so it reloads with the new cf_clearance
-    setDepositsError(""); setWithdrawsError(""); setGamesError(""); setTransactionsError(""); setWalletsError("");
-    setDeposits([]); setWithdraws([]); setGames([]); setTransactions([]); setWallets(null);
+    setDepositsError(""); setWithdrawsError(""); setGamesError(""); setTransactionsError(""); setWalletsError(""); setWingoAllError("");
+    setDeposits([]); setWithdraws([]); setGames([]); setTransactions([]); setWallets(null); setWingoAll([]);
     setReloadKey((k) => k + 1);
   }
 
@@ -1849,6 +2103,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     if (page === "game") loadGames();
     if (page === "transaction") loadTransactions();
     if (page === "wallet") loadWallets();
+    if (page === "wingo") loadWingoAll();
   }, [reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function navTo(p: Page) {
@@ -1857,10 +2112,24 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     if (p === "withdraw" && withdraws.length === 0 && !withdrawsLoading) loadWithdraws();
     if (p === "game" && games.length === 0 && !gamesLoading) loadGames();
     if (p === "transaction" && transactions.length === 0 && !transactionsLoading) loadTransactions();
+    if (p === "wingo" && wingoAll.length === 0 && !wingoAllLoading) loadWingoAll();
     setPage(p);
   }
 
   if (page === "home") return <GameHomePage onNav={navTo} onLogout={onLogout} wingoResults={wingoResults} wingoLoading={wingoLoading} />;
+  if (page === "wingo") return (
+    <WinGoPage
+      results={wingoAll}
+      loading={wingoAllLoading}
+      loadingMore={wingoAllLoadingMore}
+      error={wingoAllError}
+      hasMore={wingoAllHasMore}
+      onLoadMore={loadMoreWingoAll}
+      onRetry={() => loadWingoAll(1, false)}
+      onCfFix={handleCfFix}
+      onBack={() => setPage("home")}
+    />
+  );
   if (page === "vip") return <VIPPage vipData={vipData} claims={claims} userInfo={userInfo} onBack={() => setPage("main")} />;
   if (page === "wallet") return <WalletPage wallets={wallets} loading={walletsLoading} error={walletsError} onBack={() => setPage("main")} />;
   if (page === "depositNew") return <DepositNewPage session={session} onBack={() => setPage("deposit")} onLogout={onLogout} />;
