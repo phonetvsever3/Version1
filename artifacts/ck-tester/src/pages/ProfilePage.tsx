@@ -747,8 +747,14 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   function submit() {
     if (!selected || !amount || Number(amount) <= 0) return;
     setSubmitting(true); setSubmitError("");
-    // type: use payTypeId if present (from real typelist), else id
-    const typeId = Number(selected.payTypeId ?? selected.id);
+    // type: use id first (WavePay id=158 is what CreateRechargeOrder expects as "type"),
+    // then fall back to typeId, then payTypeId
+    const typeId = Number(selected.id ?? selected.typeId ?? selected.payTypeId ?? 0);
+    if (!typeId || typeId <= 0) {
+      setSubmitError("Could not determine payment type ID. Please tap Reload and select a payment method again.");
+      setSubmitting(false);
+      return;
+    }
     const payload: Record<string, unknown> = {
       amount: Number(amount),
       type: typeId,
