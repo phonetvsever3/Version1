@@ -777,7 +777,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         )}
       </div>
 
-      {selected && amount && Number(amount) > 0 && (
+      {selected && amount && Number(amount) > 0 && !usingFallback && (
         <div className="bg-blue-50 rounded-2xl p-4 mb-3 flex justify-between items-center">
           <div className="text-sm text-blue-700">You're depositing</div>
           <div className="text-blue-800 font-bold text-lg">K{Number(amount).toLocaleString()}</div>
@@ -788,13 +788,38 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 mb-3 text-red-700 text-sm">{submitError}</div>
       )}
 
-      <button
-        type="button"
-        onClick={submit}
-        disabled={submitting || !selected || !amount || Number(amount) <= 0}
-        className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
-        {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
-      </button>
+      {usingFallback ? (
+        <div className="space-y-2">
+          <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3 text-yellow-800 text-sm flex items-start gap-2">
+            <span className="text-base shrink-0">⚠️</span>
+            <span>Tap <strong>↻ Reload</strong> above to load your real payment methods before depositing. The current list shows placeholders only.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
+              apiPost("GetRechargeTypes", {}, session)
+                .then((d) => {
+                  const list = extractList(d) as DepositMethod[];
+                  if (list.length > 0) { setMethods(list); setSelected(list[0]); }
+                  else { setMethods(FALLBACK_METHODS); setSelected(FALLBACK_METHODS[0]); setUsingFallback(true); }
+                })
+                .catch((e) => { setMethodsError(String(e)); setMethods(FALLBACK_METHODS); setSelected(prev => prev ?? FALLBACK_METHODS[0]); setUsingFallback(true); })
+                .finally(() => setMethodsLoading(false));
+            }}
+            className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg active:opacity-90">
+            ↻ Reload Payment Methods
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={submit}
+          disabled={submitting || !selected || !amount || Number(amount) <= 0}
+          className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
+          {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
+        </button>
+      )}
     </SubPage>
   );
 }
