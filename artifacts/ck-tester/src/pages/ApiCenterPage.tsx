@@ -45,17 +45,26 @@ function isApiOk(res: Record<string, unknown>): boolean {
   return code === 0 || code === 200 || code === "0";
 }
 
+function isEndpointFound(res: Record<string, unknown>): boolean {
+  const msg = String(res.msg ?? res.message ?? res.error ?? "");
+  if (isUrlNotExist(msg)) return false;
+  if (res.error === "non-json") return false;
+  return true;
+}
+
 async function tryEndpoints(
   candidates: Array<{ ep: string; body?: Record<string, unknown> }>,
   session: UserSession,
 ): Promise<{ res: Record<string, unknown>; ep: string } | null> {
+  let firstFound: { res: Record<string, unknown>; ep: string } | null = null;
   for (const { ep, body = {} } of candidates) {
     try {
       const res = await ckPost(ep, body, session);
       if (isApiOk(res)) return { res, ep };
+      if (!firstFound && isEndpointFound(res)) firstFound = { res, ep };
     } catch { /* continue */ }
   }
-  return null;
+  return firstFound;
 }
 
 function extractData(d: Record<string, unknown>): Record<string, unknown> {
@@ -199,6 +208,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetVipList" }, { ep: "VipList" }, { ep: "GetVipGradeList" },
       { ep: "GetVipLevelList" }, { ep: "GetVipGrade" }, { ep: "GetVipLevel" },
       { ep: "GetAllVipList" }, { ep: "GetVipLevelConfig" },
+      { ep: "GetVipInfo" }, { ep: "GetVipConfig" }, { ep: "GetVipGradeConfig" },
+      { ep: "GetVipLevelInfo" }, { ep: "GetAllVip" }, { ep: "GetVipData" },
+      { ep: "GetVipConfigList" }, { ep: "VipLevelList" }, { ep: "GetVipAll" },
     ], setVipList, d => extractList(d).length + 1);
 
     // 4 Wallets
@@ -210,6 +222,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetBankCard" }, { ep: "GetBankCardList" }, { ep: "BankCardList" },
       { ep: "GetUserBankCard" }, { ep: "GetMemberBankCard" }, { ep: "GetUserCardInfo" },
       { ep: "GetCardInfo" }, { ep: "GetBankInfo" },
+      { ep: "GetBankCardInfo" }, { ep: "GetUserBankInfo" }, { ep: "BankCard" },
+      { ep: "GetWithdrawCard" }, { ep: "GetUserCard" }, { ep: "GetMyBankCard" },
+      { ep: "GetAccountInfo" }, { ep: "GetBindCard" }, { ep: "GetCardList" },
     ], setBankCards, d => extractList(d).length + 1);
 
     // 6 Deposits
@@ -232,15 +247,21 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetWithdrawInfo" }, { ep: "GetWithdrawConfig" }, { ep: "GetWithdrawLimit" },
       { ep: "WithdrawConfig" }, { ep: "GetWithdrawSetting" }, { ep: "GetWithdrawType" },
       { ep: "GetWithdrawRule" }, { ep: "GetWithdrawData" },
+      { ep: "WithdrawInfo" }, { ep: "GetWithdrawAmount" }, { ep: "GetWithdrawSet" },
+      { ep: "GetWithdrawParam" }, { ep: "GetUserWithdrawInfo" }, { ep: "GetCashConfig" },
     ], setWithdrawInfo, () => 4);
 
     // 9 Payment Methods
     run([
       { ep: "GetRechargeTypes", body: { payid: 1 } },
+      { ep: "GetRechargeTypes", body: { payid: 2 } },
+      { ep: "GetRechargeTypes", body: { payid: 3 } },
       { ep: "GetRechargeTypes", body: { payid: 0 } },
       { ep: "GetPayTypes" }, { ep: "GetPayMethod" }, { ep: "GetRechargeMethods" },
       { ep: "GetRechargeMethod" }, { ep: "GetPayChannel" }, { ep: "GetPaymentMethod" },
       { ep: "GetRechargeChannelList" }, { ep: "GetRechargeType" },
+      { ep: "GetDepositMethod" }, { ep: "GetPayList" }, { ep: "GetTopupChannel" },
+      { ep: "GetRechargeList" }, { ep: "GetPayChannelList" }, { ep: "GetRechargeInfo" },
     ], setPayMethods, d => extractList(d).length + 1);
 
     // 10 Bet / Game Records
@@ -254,6 +275,16 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetWingoRecord", body: { pageIndex: 1, pageSize: 20 } },
       { ep: "GetLotteryRecord", body: { pageIndex: 1, pageSize: 20 } },
       { ep: "GetOrderRecord", body: { pageIndex: 1, pageSize: 20, gameType: 1 } },
+      { ep: "GetMyBetRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetUserBetRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetAllBetRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetMyRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetUserRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetMyOrder", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetUserOrder", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetOrder", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetGameLog", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetMyGameRecord", body: { pageIndex: 1, pageSize: 20 } },
     ], setBets, d => extractList(d).length);
 
     // 11 Balance Transactions
@@ -268,6 +299,15 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetBalanceRecord", body: { pageIndex: 1, pageSize: 20 } },
       { ep: "GetFundRecord", body: { pageIndex: 1, pageSize: 20 } },
       { ep: "GetFinanceRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetFlowRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetFundFlowList", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetFundFlow", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetBalanceLog", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetMoneyRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetCashRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetAccountRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetWalletRecord", body: { pageIndex: 1, pageSize: 20 } },
+      { ep: "GetUserRecord", body: { pageIndex: 1, pageSize: 20, type: 0 } },
     ], setTransactions, d => extractList(d).length);
 
     // 12 WinGo results
@@ -283,12 +323,19 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetInviteInfo" }, { ep: "GetInvite" }, { ep: "InviteInfo" },
       { ep: "GetUserInvite" }, { ep: "GetInviteCode" }, { ep: "GetInviteList" },
       { ep: "GetReferralInfo" }, { ep: "GetShareInfo" }, { ep: "GetPromoteInfo" },
+      { ep: "GetMyInviteInfo" }, { ep: "GetMyInvite" }, { ep: "GetInviteDetail" },
+      { ep: "GetInviteUrl" }, { ep: "GetInviteLink" }, { ep: "GetUserInviteInfo" },
+      { ep: "GetInviteData" }, { ep: "GetPromoInfo" }, { ep: "GetShareCode" },
+      { ep: "GetReferInfo" }, { ep: "GetSpreadInfo" },
     ], setInvite, () => 5);
 
     // 14 Agent
     run([
       { ep: "GetAgentInfo" }, { ep: "GetAgent" }, { ep: "AgentInfo" },
       { ep: "GetUserAgent" }, { ep: "GetAgentData" }, { ep: "GetAgentDetail" },
+      { ep: "GetAgentReport" }, { ep: "GetAgentTeam" }, { ep: "GetAgentList" },
+      { ep: "GetMyAgentInfo" }, { ep: "GetAgentStat" }, { ep: "GetAgentStatistics" },
+      { ep: "GetDownlineInfo" }, { ep: "GetDownlineData" }, { ep: "GetAgentLevel" },
     ], setAgent, () => 5);
 
     // 15 Team
@@ -296,6 +343,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetTeamInfo" }, { ep: "GetTeam" }, { ep: "TeamInfo" },
       { ep: "GetUserTeam" }, { ep: "GetTeamMember" }, { ep: "GetTeamData" },
       { ep: "GetSubordinateInfo" }, { ep: "GetMemberList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetTeamReport" }, { ep: "GetTeamList" }, { ep: "GetTeamStatistics" },
+      { ep: "GetMyTeam" }, { ep: "GetTeamStat" }, { ep: "GetTeamCount" },
+      { ep: "GetDownlineList", body: { pageIndex: 1, pageSize: 10 } },
     ], setTeam, () => 5);
 
     // 16 Rebate
@@ -303,6 +353,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetRebateInfo" }, { ep: "GetRebate" }, { ep: "RebateInfo" },
       { ep: "GetUserRebate" }, { ep: "GetRebateData" }, { ep: "GetCashbackInfo" },
       { ep: "GetCommissionInfo" }, { ep: "GetCommission" },
+      { ep: "GetMyRebate" }, { ep: "GetRebateList" }, { ep: "GetRebateRecord" },
+      { ep: "GetCommissionData" }, { ep: "GetCommissionRecord" }, { ep: "GetCashback" },
+      { ep: "GetReturnInfo" }, { ep: "GetBonusInfo" }, { ep: "GetRebateConfig" },
     ], setRebate, () => 4);
 
     // 17 Safe
@@ -317,6 +370,9 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetDailySign" }, { ep: "GetSignRecord" }, { ep: "CheckSign" },
       { ep: "GetAttendance" }, { ep: "GetCheckIn" }, { ep: "GetSignInInfo" },
       { ep: "GetSignStatus" },
+      { ep: "GetDailySignIn" }, { ep: "GetSignList" }, { ep: "GetDaySignInfo" },
+      { ep: "GetSignDate" }, { ep: "GetSignData" }, { ep: "GetMySign" },
+      { ep: "GetCheckInInfo" }, { ep: "GetSignConfig" }, { ep: "GetAttendanceInfo" },
     ], setSignInfo, () => 3);
 
     // 19 Notices
@@ -330,6 +386,13 @@ export default function ApiCenterPage({ session, onBack }: Props) {
       { ep: "GetMessage", body: { pageIndex: 1, pageSize: 10 } },
       { ep: "GetMessageList", body: { pageIndex: 1, pageSize: 10 } },
       { ep: "GetSysNotice", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetSystemNotice", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetNoticeInfo", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "Notice", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetBulletin", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetBulletinList", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetNews", body: { pageIndex: 1, pageSize: 10 } },
+      { ep: "GetNewsList", body: { pageIndex: 1, pageSize: 10 } },
     ], setNotices, d => extractList(d).length + 1);
 
     // 20 Activities
