@@ -153,6 +153,52 @@ router.post("/proxy/sign", (req, res) => {
   }
 });
 
+// Allowed CKLottery base paths for multi-base probing (whitelist)
+const CK_ALLOWED_BASES: Record<string, string> = {
+  webapi:   "https://ckygjf6r.com/api/webapi",
+  admin:    "https://ckygjf6r.com/api/admin",
+  agent:    "https://ckygjf6r.com/api/agent",
+  operator: "https://ckygjf6r.com/api/operator",
+  manage:   "https://ckygjf6r.com/api/manage",
+  backend:  "https://ckygjf6r.com/api/backend",
+};
+
+// Multi-base proxy — /proxy/ck-path/:base/:endpoint
+router.post("/proxy/ck-path/:base/:endpoint", async (req, res) => {
+  const { base, endpoint } = req.params;
+  const baseUrl = CK_ALLOWED_BASES[base];
+  if (!baseUrl) {
+    res.status(400).json({ error: "unknown_base", message: `Unknown base "${base}". Allowed: ${Object.keys(CK_ALLOWED_BASES).join(", ")}` });
+    return;
+  }
+  const authorization = req.headers["authorization"] as string | undefined;
+  const tokenHeader = req.headers["x-ck-token-header"] as string | undefined;
+  const cfClearance = req.headers["x-ck-cf-clearance"] as string | undefined;
+  try {
+    const body = ckSign(req.body ?? {});
+    const cookieHeader = cfClearance ? `cf_clearance=${cfClearance}` : undefined;
+    const response = await fetch(`${baseUrl}/${endpoint}`, {
+      method: "POST",
+      headers: {
+        ...commonHeaders,
+        ...(authorization ? { Authorization: authorization } : {}),
+        ...(tokenHeader ? { "token-header": tokenHeader } : {}),
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const result = await safeJson(response);
+    if (!result.ok) {
+      res.status(502).json({ error: "cloudflare_blocked", message: "CKLottery is blocking this server.", preview: result.text.slice(0, 200) });
+      return;
+    }
+    res.status(response.status).json(result.data);
+  } catch (err) {
+    logger.error({ err, base, endpoint }, "Proxy ck-path error");
+    res.status(502).json({ error: "Failed to reach CKLottery server" });
+  }
+});
+
 // Generic wildcard proxy — signs and forwards any POST to CKLottery
 router.post("/proxy/ck/:endpoint", async (req, res) => {
   const { endpoint } = req.params;
