@@ -2756,7 +2756,8 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     setDepScanHits([]);
     setDepScanLog([]);
 
-    const SCAN_BASES = ["webapi", "admin", "agent", "manage", "operator", "backend", "v1", "v2"];
+    // Server confirmed: "Unknown base 'v1'. Allowed: webapi, admin, agent, opera"
+    const SCAN_BASES = ["webapi", "admin", "agent", "opera"];
     const SCAN_EPS = [
       "ConfirmRecharge","ManualRechargeSuccess","RechargeSuccess","AdminConfirmRecharge",
       "RechargeConfirm","AuditRecharge","PassRecharge","ApproveRecharge","RechargePass",
@@ -2802,7 +2803,8 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
 
     const isNotExist = (msg: string) =>
       msg.includes("not exist") || msg.includes("not found") || msg.includes("no route") ||
-      msg.includes("invalid url") || msg.includes("no such") || msg.includes("unknown_base");
+      msg.includes("invalid url") || msg.includes("no such") || msg.includes("unknown_base") ||
+      msg.includes("unknown base") || msg.includes("allowed: webapi");
 
     // All probes go through the server proxy (including webapi) for consistency
     const probeViaProxy = async (base: string, ep: string): Promise<Record<string, unknown> | null> => {
@@ -3674,10 +3676,12 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       "SystemAddBalance","BackendRecharge","BackendAddBalance","OperatorRecharge",
     ];
 
-    const SCAN_BASES_SHORT = ["webapi", "admin", "agent", "manage", "operator", "backend"];
+    // Server confirmed: "Unknown base 'v1'. Allowed: webapi, admin, agent, opera"
+    const SCAN_BASES_SHORT = ["webapi", "admin", "agent", "opera"];
     const isNotExistMsg = (m: string) =>
       m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
-      m.includes("invalid url") || m.includes("no such") || m.includes("unknown_base") || m.includes("404");
+      m.includes("invalid url") || m.includes("no such") || m.includes("unknown_base") ||
+      m.includes("unknown base") || m.includes("allowed: webapi") || m.includes("404");
 
     const proxyPost = async (base: string, ep: string, body: Record<string, unknown>) => {
       const auth = buildAuth(session);
