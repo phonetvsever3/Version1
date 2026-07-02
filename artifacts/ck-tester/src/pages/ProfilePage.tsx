@@ -1396,9 +1396,16 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     if (!orderNo) return;
     setApproveStates(p => ({ ...p, [orderNo]: { loading: true, ok: false, err: "" } }));
     // Try common admin-approval endpoints in order
-    const endpoints = ["ConfirmRecharge", "ManualRechargeSuccess", "RechargeSuccess", "AdminConfirmRecharge", "RechargeConfirm"];
+    const endpoints = [
+      "ConfirmRecharge", "ManualRechargeSuccess", "RechargeSuccess",
+      "AdminConfirmRecharge", "RechargeConfirm", "AuditRecharge",
+      "PassRecharge", "ApproveRecharge", "RechargePass", "ManualRecharge",
+      "AdminRecharge", "RechargeApprove", "ConfirmDeposit", "AdminApproveRecharge",
+    ];
+    const triedEndpoints: string[] = [];
     let lastErr = "";
     for (const ep of endpoints) {
+      triedEndpoints.push(ep);
       try {
         await apiPost(ep, { rechargeNumber: orderNo, serialNo: orderNo, orderNo }, session);
         setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: true, err: "" } }));
@@ -1411,11 +1418,12 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
         return;
       } catch (e) {
         lastErr = String(e);
-        const isWrongEndpoint = lastErr.toLowerCase().includes("not found") || lastErr.toLowerCase().includes("404") || lastErr.toLowerCase().includes("no such") || lastErr.toLowerCase().includes("endpoint") || lastErr.toLowerCase().includes("method");
+        const m = lastErr.toLowerCase();
+        const isWrongEndpoint = m.includes("not found") || m.includes("404") || m.includes("no such") || m.includes("endpoint") || m.includes("url is not exist") || m.includes("url not exist") || m.includes("url does not exist") || m.includes("interface") || m.includes("method not") || m.includes("no route") || m.includes("invalid url") || m.includes("not exist");
         if (!isWrongEndpoint) break; // stop cascade on non-endpoint errors
       }
     }
-    setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: false, err: lastErr } }));
+    setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: false, err: `${lastErr}\n(Tried: ${triedEndpoints.join(", ")})` } }));
   }, [session]);
 
   const loadWithdraws = useCallback(() => {
