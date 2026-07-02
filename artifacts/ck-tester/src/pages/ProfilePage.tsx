@@ -1319,6 +1319,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [depositsLoading, setDepositsLoading] = useState(false);
   const [depositsError, setDepositsError] = useState("");
   const [approveStates, setApproveStates] = useState<Record<string, { loading: boolean; ok: boolean; err: string }>>({});
+  const [approveCustomEndpoint, setApproveCustomEndpoint] = useState<Record<string, string>>({});
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -1388,20 +1389,23 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .finally(() => setDepositsLoading(false));
   }, [session]);
 
-  const approveDeposit = useCallback(async (item: Record<string, unknown>) => {
+  const approveDeposit = useCallback(async (item: Record<string, unknown>, customEndpoint?: string) => {
     // Extract the order identifier (field name varies by API version)
     const orderNo = String(
       item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? ""
     );
     if (!orderNo) return;
     setApproveStates(p => ({ ...p, [orderNo]: { loading: true, ok: false, err: "" } }));
-    // Try common admin-approval endpoints in order
-    const endpoints = [
+    // If user provided a custom endpoint, try it first (and only)
+    const builtIn = [
       "ConfirmRecharge", "ManualRechargeSuccess", "RechargeSuccess",
       "AdminConfirmRecharge", "RechargeConfirm", "AuditRecharge",
       "PassRecharge", "ApproveRecharge", "RechargePass", "ManualRecharge",
       "AdminRecharge", "RechargeApprove", "ConfirmDeposit", "AdminApproveRecharge",
     ];
+    const endpoints = customEndpoint?.trim()
+      ? [customEndpoint.trim(), ...builtIn]
+      : builtIn;
     const triedEndpoints: string[] = [];
     let lastErr = "";
     for (const ep of endpoints) {
@@ -1530,7 +1534,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
                 <RecordFields item={item} skip={skipKeys} />
                 {/* Approve button for pending orders */}
                 {isPending && (
-                  <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
                     {apv?.ok ? (
                       <div className="text-green-600 text-sm font-medium flex items-center gap-1.5">
                         <span>✅</span> Approved successfully! Refreshing…
@@ -1540,13 +1544,26 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
                         <button
                           type="button"
                           disabled={apv?.loading}
-                          onClick={() => approveDeposit(item)}
+                          onClick={() => approveDeposit(item, approveCustomEndpoint[orderNo])}
                           className="w-full bg-green-500 disabled:bg-green-300 text-white py-2.5 rounded-xl font-semibold text-sm active:opacity-80"
                         >
                           {apv?.loading ? "Approving…" : "✅ Approve Deposit"}
                         </button>
+                        {/* Custom endpoint — use if auto-discovery fails */}
+                        <div className="flex gap-2 items-center">
+                          <input
+                            type="text"
+                            placeholder="Custom endpoint (e.g. AdminPassRecharge)"
+                            value={approveCustomEndpoint[orderNo] ?? ""}
+                            onChange={e => setApproveCustomEndpoint(p => ({ ...p, [orderNo]: e.target.value }))}
+                            className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 bg-gray-50 focus:outline-none focus:border-blue-400"
+                          />
+                        </div>
                         {apv?.err && (
-                          <div className="text-red-500 text-xs mt-2 break-all">{apv.err}</div>
+                          <div className="text-red-500 text-xs break-all bg-red-50 rounded-lg p-2">{apv.err.split("\n")[0]}</div>
+                        )}
+                        {apv?.err?.includes("(Tried:") && (
+                          <div className="text-gray-400 text-xs italic">All built-in endpoints tried. Enter a custom endpoint above and tap Approve again.</div>
                         )}
                       </>
                     )}
