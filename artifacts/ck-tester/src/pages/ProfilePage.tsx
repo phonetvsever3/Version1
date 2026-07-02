@@ -644,7 +644,7 @@ function WalletPage({ wallets, loading, error, onBack }: { wallets: Record<strin
 }
 
 // ─── Main / Account Page ───────────────────────────────────────────────────────
-function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: { claims: Record<string, unknown> | null; userInfo: Record<string, unknown> | null; balance: string; tokenExpired: boolean; onNav: (p: Page) => void; onLogout: () => void }) {
+function MainPage({ claims, userInfo, balance, balanceLoading, balanceError, tokenExpired, onNav, onLogout, onRefreshBalance }: { claims: Record<string, unknown> | null; userInfo: Record<string, unknown> | null; balance: string; balanceLoading: boolean; balanceError: string; tokenExpired: boolean; onNav: (p: Page) => void; onLogout: () => void; onRefreshBalance: () => void }) {
   const nickName = String(claims?.NickName || userInfo?.nickName || "Account").toUpperCase();
   const userId = String(claims?.UserId || userInfo?.userId || "—");
   const lastLogin = String(claims?.LoginTime || userInfo?.loginTime || "—");
@@ -670,8 +670,28 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
       {tokenExpired && <ExpiredBanner onLogout={onLogout} />}
 
       <div className="mx-4 mt-3 bg-white rounded-2xl shadow-sm p-5">
-        <div className="text-gray-400 text-sm mb-1">Total balance</div>
-        <div className="text-gray-900 font-bold text-4xl flex items-center gap-2">K{balance}<span className="text-gray-300 text-xl">↻</span></div>
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-gray-400 text-sm">Total balance</div>
+          <button
+            type="button"
+            onClick={onRefreshBalance}
+            disabled={balanceLoading}
+            className="text-blue-400 text-xs flex items-center gap-1 active:opacity-60 disabled:opacity-40"
+          >
+            <span className={balanceLoading ? "animate-spin inline-block" : ""}>↻</span>
+            {balanceLoading ? "Fetching…" : "Refresh"}
+          </button>
+        </div>
+        <div className="text-gray-900 font-bold text-4xl">
+          {balanceLoading && balance === "—" ? (
+            <span className="text-gray-300 text-2xl">Loading…</span>
+          ) : (
+            <>K{balance}</>
+          )}
+        </div>
+        {balanceError && (
+          <div className="text-xs text-red-400 mt-1 truncate">{balanceError}</div>
+        )}
       </div>
 
       <div className="mx-4 mt-3 bg-white rounded-2xl shadow-sm p-5">
@@ -1345,7 +1365,9 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [page, setPage] = useState<Page>("home");
   const [userInfo, setUserInfo] = useState<Record<string, unknown> | null>(null);
   const [vipData, setVipData] = useState<Record<string, unknown> | null>(null);
-  const [balance, setBalance] = useState("0.00");
+  const [balance, setBalance] = useState("—");
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceError, setBalanceError] = useState("");
   const [wallets, setWallets] = useState<Record<string, unknown> | null>(null);
   const [walletsLoading, setWalletsLoading] = useState(false);
   const [walletsError, setWalletsError] = useState("");
@@ -1398,18 +1420,26 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     ? Date.now() > Number(tokenClaims.exp) * 1000
     : false;
 
+  const refreshBalance = useCallback(() => {
+    setBalanceLoading(true);
+    setBalanceError("");
+    apiPost("GetUserInfo", {}, session)
+      .then((d) => {
+        const data = (d?.data ?? d) as Record<string, unknown>;
+        if (data && typeof data === "object") {
+          setUserInfo(data);
+          const bal = data.balance ?? data.amount ?? data.money ?? data.totalBalance ?? data.mainBalance;
+          if (bal !== undefined && bal !== null) setBalance(String(bal));
+          else setBalanceError("No balance field in response");
+        }
+      })
+      .catch((e) => setBalanceError(String(e)))
+      .finally(() => setBalanceLoading(false));
+  }, [session]);
+
   useEffect(() => {
     // Always attempt API calls — the proxy will tell us if auth failed
-    apiPost("GetUserInfo", {}, session).then((d) => {
-      const data = (d?.data ?? d) as Record<string, unknown>;
-      if (data && typeof data === "object") {
-        setUserInfo(data);
-        const bal = data.balance ?? data.amount ?? claims?.Amount ?? "0.00";
-        setBalance(String(bal));
-      }
-    }).catch(() => {
-      if (claims?.Amount !== undefined) setBalance(String(claims.Amount));
-    });
+    refreshBalance();
 
     apiPost("GetVipUserLevelDetail", {}, session).then((d) => {
       const data = (d?.data ?? d) as Record<string, unknown>;
@@ -2430,5 +2460,5 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     );
   }
 
-  return <MainPage claims={claims} userInfo={userInfo} balance={balance} tokenExpired={tokenExpired} onNav={navTo} onLogout={onLogout} />;
+  return <MainPage claims={claims} userInfo={userInfo} balance={balance} balanceLoading={balanceLoading} balanceError={balanceError} tokenExpired={tokenExpired} onNav={navTo} onLogout={onLogout} onRefreshBalance={refreshBalance} />;
 }
