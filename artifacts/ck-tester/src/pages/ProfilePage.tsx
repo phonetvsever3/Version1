@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { UserSession } from "../App";
 import { decodeJwt } from "../utils/jwt";
 import { CK_API_BASE } from "../utils/ckSign";
@@ -1354,6 +1354,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [depositsError, setDepositsError] = useState("");
   const [approveStates, setApproveStates] = useState<Record<string, { loading: boolean; ok: boolean; err: string }>>({});
   const [approveCustomEndpoint, setApproveCustomEndpoint] = useState<Record<string, string>>({});
+  const autoApprovedRef = useRef<Set<string>>(new Set());
   const [addBalAmount, setAddBalAmount] = useState("10000");
   const [addBalUserId, setAddBalUserId] = useState("");
   const [addBalCustomEp, setAddBalCustomEp] = useState("");
@@ -1472,6 +1473,21 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     setApproveStates(p => ({ ...p, [orderNo]: { loading: false, ok: false, err: `${lastErr}\n(Tried: ${triedEndpoints.join(", ")})` } }));
   }, [session]);
 
+  // Auto-approve any pending deposits as soon as they load
+  useEffect(() => {
+    deposits.forEach((item) => {
+      const stateVal = item.state ?? item.status;
+      const isPending = stateVal === 0 || stateVal === "0";
+      if (!isPending) return;
+      const orderNo = String(
+        item.rechargeNumber ?? item.rechargeSNum ?? item.orderNo ?? item.serialNo ?? item.rechargeNo ?? item.id ?? ""
+      );
+      if (!orderNo || autoApprovedRef.current.has(orderNo)) return;
+      autoApprovedRef.current.add(orderNo);
+      approveDeposit(item);
+    });
+  }, [deposits, approveDeposit]);
+
   const loadWithdraws = useCallback(() => {
     setWithdrawsLoading(true); setWithdrawsError("");
     apiPost("GetWithdrawLog", { pageIndex: 1, pageSize: 20 }, session)
@@ -1574,24 +1590,20 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
                   <StatusBadge status={item.state ?? item.status} str={statusStr as string | undefined} />
                 </div>
                 <RecordFields item={item} skip={skipKeys} />
-                {/* Approve button for pending orders */}
+                {/* Auto-approve status for pending orders */}
                 {isPending && (
-                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+                  <div className="mt-3 pt-3 border-t border-gray-100">
                     {apv?.ok ? (
                       <div className="text-green-600 text-sm font-medium flex items-center gap-1.5">
                         <span>✅</span> Approved successfully! Refreshing…
                       </div>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          disabled={apv?.loading}
-                          onClick={() => approveDeposit(item, approveCustomEndpoint[orderNo])}
-                          className="w-full bg-green-500 disabled:bg-green-300 text-white py-2.5 rounded-xl font-semibold text-sm active:opacity-80"
-                        >
-                          {apv?.loading ? "Approving…" : "✅ Approve Deposit"}
-                        </button>
-                        {/* Custom endpoint — use if auto-discovery fails */}
+                    ) : apv?.loading ? (
+                      <div className="text-blue-500 text-sm flex items-center gap-1.5">
+                        <span className="animate-spin">⏳</span> Auto-approving…
+                      </div>
+                    ) : apv?.err ? (
+                      <div className="space-y-2">
+                        <div className="text-red-500 text-xs break-all bg-red-50 rounded-lg p-2">{apv.err.split("\n")[0]}</div>
                         <div className="flex gap-2 items-center">
                           <input
                             type="text"
@@ -1600,15 +1612,16 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
                             onChange={e => setApproveCustomEndpoint(p => ({ ...p, [orderNo]: e.target.value }))}
                             className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-800 bg-gray-50 focus:outline-none focus:border-blue-400"
                           />
+                          <button
+                            type="button"
+                            onClick={() => approveDeposit(item, approveCustomEndpoint[orderNo])}
+                            className="bg-green-500 text-white px-3 py-2 rounded-xl font-semibold text-xs active:opacity-80"
+                          >
+                            Retry
+                          </button>
                         </div>
-                        {apv?.err && (
-                          <div className="text-red-500 text-xs break-all bg-red-50 rounded-lg p-2">{apv.err.split("\n")[0]}</div>
-                        )}
-                        {apv?.err?.includes("(Tried:") && (
-                          <div className="text-gray-400 text-xs italic">All built-in endpoints tried. Enter a custom endpoint above and tap Approve again.</div>
-                        )}
-                      </>
-                    )}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
