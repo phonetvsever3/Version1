@@ -860,63 +860,78 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
 
   useEffect(() => { loadMethods(); }, []);
 
-  function submit() {
+  async function submit() {
     if (!selected || !amount || Number(amount) <= 0) return;
-    // If we're using fallback (hardcoded) IDs, the server will reject them.
-    // Force the user to reload real methods first.
     if (usingFallback) {
       setSubmitError("Payment methods could not be loaded from the server. Tap the ↻ Reload button above to try again before depositing.");
       return;
     }
     setSubmitting(true); setSubmitError("");
     const selObj = selected as Record<string, unknown>;
-    // Extract the type ID — payTypeID is the confirmed field from the API
-    let typeId = 0;
-    for (const key of [
-      "payTypeID", "payTypeId", "paytypeid",
-      "id", "typeId", "typeid", "type",
-      "payid", "payId", "payID",
-      "bankId", "bankid", "bankTypeId", "banktypeid",
-      "rechargeTypeId", "rechargetypeid", "rechargeid",
-      "pid", "sid",
-    ]) {
-      const v = Number(selObj[key]);
-      if (Number.isFinite(v) && v > 0) { typeId = v; break; }
-    }
-    if (typeId <= 0) {
-      // Last resort: pick ANY numeric field > 0
-      for (const v of Object.values(selObj)) {
-        const n = Number(v);
-        if (Number.isFinite(n) && n > 0 && Number.isInteger(n) && !String(v).includes(".")) {
-          typeId = n; break;
-        }
+    const groupPayid = Number(selObj._payid ?? selObj.payID ?? 0);
+
+    // Build ordered candidate type values to try.
+    // CKLottery's CreateRechargeOrder "type" field may not match payTypeID —
+    // cascade through candidates until one works (no duplicate-order risk since failures return errors).
+    const seen = new Set<number>();
+    const candidateTypes: number[] = [];
+    function addCandidate(v: unknown) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0 && Number.isInteger(n) && !seen.has(n)) {
+        seen.add(n); candidateTypes.push(n);
       }
     }
-    if (typeId <= 0) {
-      setSubmitError(`Could not determine payment type ID. Keys found: ${JSON.stringify(Object.keys(selObj))}. Tap ↻ Reload and try again.`);
+    // Priority order: payTypeID → paySysName (e.g. "102") → groupPayid
+    addCandidate(selObj.payTypeID ?? selObj.payTypeId);
+    addCandidate(selObj.paySysName ?? selObj.sysName ?? selObj.sysCode);
+    addCandidate(groupPayid);
+    // Sweep all other integer fields as last-resort candidates
+    for (const v of Object.values(selObj)) {
+      addCandidate(v);
+    }
+
+    if (candidateTypes.length === 0) {
+      setSubmitError(`Could not determine payment type ID. Keys: ${JSON.stringify(Object.keys(selObj))}`);
       setSubmitting(false);
       return;
     }
-    const sel = selected as Record<string, unknown>;
-    // payTypeID is the confirmed field for CreateRechargeOrder "type" parameter.
-    // payID / _payid is the payment group used in GetRechargeTypes.
-    const groupPayid = Number(sel._payid ?? sel.payID ?? 0);
-    const payload: Record<string, unknown> = {
+
+    const basePayload: Record<string, unknown> = {
       amount: Number(amount),
-      type: typeId,           // typeId = payTypeID (e.g. 10966) — confirmed from debug
       ReturnUrl: "https://www.cklottery.club/",
     };
-    if (groupPayid > 0) payload.payid = groupPayid;
-    if (selected.code) payload.rechargeType = selected.code;
-    if (payerName.trim()) payload.payerName = payerName.trim();
-    if (remark.trim()) payload.remark = remark.trim();
-    apiPost("CreateRechargeOrder", payload, session)
-      .then((d) => {
+    if (groupPayid > 0) basePayload.payid = groupPayid;
+    if (selected.code) basePayload.rechargeType = selected.code;
+    if (payerName.trim()) basePayload.payerName = payerName.trim();
+    if (remark.trim()) basePayload.remark = remark.trim();
+
+    let lastErr = "";
+    for (const typeId of candidateTypes) {
+      try {
+        const d = await apiPost("CreateRechargeOrder", { ...basePayload, type: typeId }, session);
         const data = (d?.data ?? d) as Record<string, unknown>;
         setOrderResult(data && typeof data === "object" ? data : d);
-      })
-      .catch((e) => setSubmitError(String(e)))
-      .finally(() => setSubmitting(false));
+        setSubmitting(false);
+        return;
+      } catch (e) {
+        const msg = String(e);
+        lastErr = `type=${typeId}: ${msg}`;
+        // Only continue trying other type values if this is a type-validation error
+        const isTypeErr = msg.toLowerCase().includes("type") || msg.includes("greater than 0") || msg.toLowerCase().includes("invalid");
+        if (!isTypeErr) { setSubmitError(msg); setSubmitting(false); return; }
+      }
+    }
+
+    // Final attempt: omit type entirely (payid only)
+    try {
+      const d = await apiPost("CreateRechargeOrder", basePayload, session);
+      const data = (d?.data ?? d) as Record<string, unknown>;
+      setOrderResult(data && typeof data === "object" ? data : d);
+    } catch (e) {
+      setSubmitError(`${String(e)}\n\nTried type values: ${candidateTypes.join(", ")}`);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   // ── Order success / payment details ──
