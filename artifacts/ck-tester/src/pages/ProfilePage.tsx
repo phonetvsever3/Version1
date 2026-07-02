@@ -775,45 +775,46 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   async function loadMethods() {
     setMethodsLoading(true); setMethodsError(""); setUsingFallback(false); setMethodsRawDebug("");
     let list: DepositMethod[] = [];
-    let rawDebug = "";
     // Direct browser call — only path that bypasses Cloudflare
-    try {
-      // Sign the request body via our server
-      const signRes = await fetch("/api/proxy/sign", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
-      });
-      const signed = await signRes.json() as Record<string, unknown>;
-      // Call CKLottery directly from the browser
-      const auth = session.tokenHeader ? `${session.tokenHeader} ${session.token}`.trim() : session.token;
-      const res = await fetch(`https://ckygjf6r.com/api/webapi/GetRechargeTypes`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Authorization": auth,
-          "Origin": "https://www.cklottery.club",
-          "Referer": "https://www.cklottery.club/",
-        },
-        body: JSON.stringify(signed),
-      });
-      const text = await res.text();
-      rawDebug = text.slice(0, 500);
-      setMethodsRawDebug(rawDebug);
+    // GetRechargeTypes requires a "payid" param > 0. Try values 1–5 until one returns methods.
+    const auth = session.tokenHeader ? `${session.tokenHeader} ${session.token}`.trim() : session.token;
+    let lastDebug = "";
+    for (const payid of [1, 2, 3, 4, 5]) {
       try {
+        const signRes = await fetch("/api/proxy/sign", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payid }),
+        });
+        const signed = await signRes.json() as Record<string, unknown>;
+        const res = await fetch(`https://ckygjf6r.com/api/webapi/GetRechargeTypes`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": auth,
+            "Origin": "https://www.cklottery.club",
+            "Referer": "https://www.cklottery.club/",
+          },
+          body: JSON.stringify(signed),
+        });
+        const text = await res.text();
+        lastDebug = `payid=${payid}: ${text.slice(0, 300)}`;
+        setMethodsRawDebug(lastDebug);
         const parsed = JSON.parse(text) as Record<string, unknown>;
-        list = extractList(parsed) as DepositMethod[];
-        if (list.length === 0) {
-          // Show all keys for debugging so we can identify the right key name
-          const allKeys = JSON.stringify(Object.keys(parsed));
-          const dataKeys = parsed.data && typeof parsed.data === "object"
-            ? JSON.stringify(Object.keys(parsed.data as object)) : "";
-          setMethodsError(`API returned 0 methods. Top keys: ${allKeys}${dataKeys ? ` | data keys: ${dataKeys}` : ""} | raw: ${text.slice(0, 200)}`);
+        if ((parsed.code === 0 || parsed.code === 200) || parsed.code === undefined) {
+          const found = extractList(parsed) as DepositMethod[];
+          if (found.length > 0) {
+            // Tag each method with the payid that worked, for use in CreateRechargeOrder
+            list = found.map(m => ({ ...m, _payid: payid }));
+            break;
+          }
         }
+        // Non-zero code with a different error — keep trying other payid values
       } catch {
-        setMethodsError(`JSON parse failed: ${text.slice(0, 300)}`);
+        // network/parse error — try next payid
       }
-    } catch (e) {
-      setMethodsError(String(e));
+    }
+    if (list.length === 0) {
+      setMethodsError(`GetRechargeTypes payid 1–5 all failed. Last: ${lastDebug.slice(0, 300)}`);
     }
     if (list.length > 0) {
       setMethods(list);
@@ -848,11 +849,15 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       setSubmitting(false);
       return;
     }
+    const sel = selected as Record<string, unknown>;
     const payload: Record<string, unknown> = {
       amount: Number(amount),
       type: typeId,
       ReturnUrl: "https://www.cklottery.club/",
     };
+    // Include payid if we captured it from GetRechargeTypes — required by the API
+    const payid = Number(sel._payid ?? sel.payid ?? 0);
+    if (payid > 0) payload.payid = payid;
     if (selected.code) payload.rechargeType = selected.code;
     if (payerName.trim()) payload.payerName = payerName.trim();
     if (remark.trim()) payload.remark = remark.trim();
