@@ -1378,6 +1378,11 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [games, setGames] = useState<Record<string, unknown>[]>([]);
   const [gamesLoading, setGamesLoading] = useState(false);
   const [gamesError, setGamesError] = useState("");
+  const [gamesPage, setGamesPage] = useState(1);
+  const [gamesHasMore, setGamesHasMore] = useState(true);
+  const [gamesLoadingMore, setGamesLoadingMore] = useState(false);
+  const [gamesFilter, setGamesFilter] = useState("all");
+  const gamesLoadingRef = useRef(false);
   const [transactions, setTransactions] = useState<Record<string, unknown>[]>([]);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
   const [transactionsError, setTransactionsError] = useState("");
@@ -1738,15 +1743,29 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       .finally(() => setWithdrawsLoading(false));
   }, [session]);
 
-  const loadGames = useCallback(() => {
-    setGamesLoading(true); setGamesError("");
-    apiPost("BetRecords", { pageIndex: 1, pageSize: 20 }, session)
-      .then((d) => setGames(extractList(d)))
-      .catch(() => apiPost("BettingRecord", { pageIndex: 1, pageSize: 20 }, session)
-        .then((d) => setGames(extractList(d)))
-        .catch((e) => setGamesError(String(e))))
-      .finally(() => setGamesLoading(false));
-  }, [session]);
+  const GAME_PAGE_SIZE = 20;
+
+  const loadGames = useCallback((pg = 1, append = false) => {
+    if (gamesLoadingRef.current) return;
+    gamesLoadingRef.current = true;
+    if (append) { setGamesLoadingMore(true); }
+    else { setGamesLoading(true); setGamesError(""); setGamesHasMore(true); setGamesFilter("all"); }
+    const tryFetch = (ep: string) =>
+      apiPost(ep, { pageIndex: pg, pageSize: GAME_PAGE_SIZE }, session).then((d) => {
+        const list = extractList(d);
+        setGames(prev => append ? [...prev, ...list] : list);
+        setGamesHasMore(list.length >= GAME_PAGE_SIZE);
+        setGamesPage(pg);
+      });
+    tryFetch("BetRecords")
+      .catch(() => tryFetch("BettingRecord"))
+      .catch((e) => { if (!append) setGamesError(String(e)); })
+      .finally(() => { gamesLoadingRef.current = false; setGamesLoading(false); setGamesLoadingMore(false); });
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadMoreGames = useCallback(() => {
+    if (gamesHasMore && !gamesLoadingRef.current) loadGames(gamesPage + 1, true);
+  }, [gamesHasMore, gamesPage, loadGames]);
 
   const loadTransactions = useCallback(() => {
     setTransactionsLoading(true); setTransactionsError("");
@@ -1973,29 +1992,156 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
     </SubPage>
   );
 
-  if (page === "game") return (
-    <SubPage title="🎮 Game History" onBack={() => setPage("main")}>
-      <ListState loading={gamesLoading} error={gamesError} empty={!gamesLoading && !gamesError && games.length === 0} onCfFix={handleCfFix} onRetry={loadGames} />
-      {!gamesLoading && !gamesError && games.length > 0 && (
-        <div className="space-y-3">
-          {games.map((item, i) => (
-            <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
-              <div className="flex justify-between items-start mb-1">
-                <div className="text-sm font-bold text-gray-800">{String(item.gameName ?? item.gameCode ?? item.typeName ?? `Bet #${i + 1}`)}</div>
-                <div className={`text-sm font-bold ${Number(item.winAmount ?? item.profit ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-                  {Number(item.winAmount ?? item.profit ?? 0) >= 0 ? "+" : ""}K{String(item.winAmount ?? item.profit ?? "—")}
+  if (page === "game") {
+    const totalBet = games.reduce((sum, g) => sum + Number(pick(g, ["betAmount", "orderMoney", "money", "amount"]) ?? 0), 0);
+    const totalWin = games.reduce((sum, g) => sum + Number(pick(g, ["winAmount", "profit", "winMoney", "bonus", "award"]) ?? 0), 0);
+    const netPnl = totalWin - totalBet;
+    const allTypes = [...new Set(
+      games.map(g => String(pick(g, ["gameName", "gameCode", "typeName", "gameType", "gameTypeName"]) ?? ""))
+           .filter(Boolean)
+    )];
+    const filtered = gamesFilter === "all"
+      ? games
+      : games.filter(g => String(pick(g, ["gameName", "gameCode", "typeName", "gameType", "gameTypeName"]) ?? "") === gamesFilter);
+
+    return (
+      <SubPage title="🎮 Game History" onBack={() => setPage("main")}>
+        <ListState loading={gamesLoading} error={gamesError} empty={!gamesLoading && !gamesError && games.length === 0} onCfFix={handleCfFix} onRetry={loadGames} />
+
+        {!gamesLoading && !gamesError && games.length > 0 && (
+          <>
+            {/* Summary bar */}
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <div className="bg-white rounded-2xl shadow-sm p-3 text-center">
+                <div className="text-xs text-gray-400 mb-0.5">Bets</div>
+                <div className="text-base font-bold text-gray-800">{games.length}</div>
+              </div>
+              <div className="bg-white rounded-2xl shadow-sm p-3 text-center">
+                <div className="text-xs text-gray-400 mb-0.5">Wagered</div>
+                <div className="text-sm font-bold text-gray-800">K{totalBet.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+              </div>
+              <div className="bg-white rounded-2xl shadow-sm p-3 text-center">
+                <div className="text-xs text-gray-400 mb-0.5">Net P&amp;L</div>
+                <div className={`text-sm font-bold ${netPnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                  {netPnl >= 0 ? "+" : "−"}K{Math.abs(netPnl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-1 mt-1">
-                {item.betAmount !== undefined && <div className="text-xs text-gray-400">Bet: <span className="text-gray-600">K{String(item.betAmount)}</span></div>}
-                {item.createTime != null && <div className="text-xs text-gray-400">{String(item.createTime)}</div>}
-              </div>
             </div>
-          ))}
-        </div>
-      )}
-    </SubPage>
-  );
+
+            {/* Game type filter tabs */}
+            {allTypes.length > 1 && (
+              <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+                {(["all", ...allTypes] as string[]).map(t => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setGamesFilter(t)}
+                    className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                      gamesFilter === t
+                        ? "bg-blue-500 text-white"
+                        : "bg-white text-gray-500 shadow-sm"
+                    }`}
+                  >
+                    {t === "all" ? `All (${games.length})` : t}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Record cards */}
+            <div className="space-y-3">
+              {filtered.map((item, i) => {
+                const gameName = String(pick(item, ["gameName", "gameCode", "typeName", "gameType", "gameTypeName"]) ?? `Bet #${i + 1}`);
+                const betAmt   = pick(item, ["betAmount", "orderMoney", "money", "amount"]);
+                const winAmt   = pick(item, ["winAmount", "profit", "winMoney", "bonus", "award"]);
+                const netAmt   = winAmt !== undefined ? Number(winAmt) - Number(betAmt ?? 0) : undefined;
+                const dt       = pick(item, ["createTime", "addTime", "betTime", "time", "date", "orderTime"]);
+                const period   = pick(item, ["issueNumber", "period", "periodNum", "issue", "roundId", "roundNum", "periodNumber"]);
+                const selection = pick(item, ["betContent", "selectContent", "content", "select", "guess", "betNum", "number", "color"]);
+                const isWin    = winAmt !== undefined ? Number(winAmt) > Number(betAmt ?? 0) : undefined;
+                const skipKeys = [
+                  "gameName", "gameCode", "typeName", "gameType", "gameTypeName",
+                  "betAmount", "orderMoney", "winAmount", "profit", "winMoney", "bonus", "award",
+                  "createTime", "addTime", "betTime", "time", "date", "orderTime",
+                  "issueNumber", "period", "periodNum", "issue", "roundId", "roundNum", "periodNumber",
+                  "betContent", "selectContent", "content", "select", "guess", "betNum", "number", "color",
+                  "money", "amount",
+                ];
+                return (
+                  <div key={i} className="bg-white rounded-2xl shadow-sm p-4">
+                    {/* Header row: game name + win/loss badge */}
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold text-gray-800 truncate">{gameName}</div>
+                        {period !== undefined && (
+                          <div className="text-xs text-gray-400 mt-0.5">Period #{String(period)}</div>
+                        )}
+                      </div>
+                      {isWin !== undefined && (
+                        <span className={`ml-2 flex-shrink-0 text-xs font-semibold px-2.5 py-0.5 rounded-full ${
+                          isWin ? "bg-green-100 text-green-600" : "bg-red-100 text-red-500"
+                        }`}>
+                          {isWin ? "Win" : "Loss"}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Stats grid */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-1.5">
+                      {betAmt !== undefined && (
+                        <div className="text-xs text-gray-400">
+                          Bet: <span className="text-gray-700 font-medium">K{Number(betAmt).toLocaleString()}</span>
+                        </div>
+                      )}
+                      {winAmt !== undefined && (
+                        <div className="text-xs text-gray-400">
+                          Win: <span className="text-gray-700 font-medium">K{Number(winAmt).toLocaleString()}</span>
+                        </div>
+                      )}
+                      {netAmt !== undefined && (
+                        <div className="text-xs text-gray-400">
+                          P&amp;L:{" "}
+                          <span className={`font-medium ${netAmt >= 0 ? "text-green-500" : "text-red-500"}`}>
+                            {netAmt >= 0 ? "+" : "−"}K{Math.abs(netAmt).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      )}
+                      {selection !== undefined && (
+                        <div className="text-xs text-gray-400">
+                          Pick: <span className="text-gray-700 font-medium">{String(selection)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {dt !== undefined && (
+                      <div className="text-xs text-gray-400 border-t border-gray-50 pt-1.5 mt-1">{String(dt)}</div>
+                    )}
+                    <RecordFields item={item} skip={skipKeys} />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Pagination */}
+            <div className="mt-4">
+              {gamesHasMore ? (
+                <button
+                  type="button"
+                  onClick={loadMoreGames}
+                  disabled={gamesLoadingMore}
+                  className="w-full py-3 bg-white rounded-2xl shadow-sm text-sm font-semibold text-blue-500 active:opacity-70 disabled:opacity-50"
+                >
+                  {gamesLoadingMore ? "Loading…" : "Load More"}
+                </button>
+              ) : (
+                <div className="text-center text-xs text-gray-300 py-3">— End of records —</div>
+              )}
+            </div>
+          </>
+        )}
+      </SubPage>
+    );
+  }
 
   if (page === "transaction") return (
     <SubPage title="💸 Transaction History" onBack={() => setPage("main")}>
