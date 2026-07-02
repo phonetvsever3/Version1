@@ -781,6 +781,8 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [orderResult, setOrderResult] = useState<Record<string, unknown> | null>(null);
+  const [orderDuplicate, setOrderDuplicate] = useState(false);
+  const [channelUnsupported, setChannelUnsupported] = useState(false);
   const [utr, setUtr] = useState("");
   const [utrSubmitting, setUtrSubmitting] = useState(false);
   const [utrError, setUtrError] = useState("");
@@ -866,7 +868,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       setSubmitError("Payment methods could not be loaded from the server. Tap the ↻ Reload button above to try again before depositing.");
       return;
     }
-    setSubmitting(true); setSubmitError("");
+    setSubmitting(true); setSubmitError(""); setOrderDuplicate(false); setChannelUnsupported(false);
     const selObj = selected as Record<string, unknown>;
     const groupPayid = Number(selObj._payid ?? selObj.payID ?? 0);
     const payTypeIDVal = Number(selObj.payTypeID ?? selObj.payTypeId ?? 0);
@@ -914,6 +916,15 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
 
     const tried: string[] = [];
     let lastErr = "";
+
+    function classifyError(msg: string): "duplicate" | "unsupported" | "recoverable" | "fatal" {
+      const m = msg.toLowerCase();
+      if (m.includes("resubmit") || m.includes("do not submit") || m.includes("already") || m.includes("duplicate") || m.includes("repeat") || m.includes("pending order") || m.includes("processing")) return "duplicate";
+      if (m.includes("not supported") || m.includes("channel") || m.includes("unavailable") || m.includes("not open") || m.includes("maintenance")) return "unsupported";
+      if (m.includes("type") || m.includes("greater than 0") || m.includes("invalid") || m.includes("param") || m.includes("illegal")) return "recoverable";
+      return "fatal";
+    }
+
     for (const variant of variants) {
       const label = JSON.stringify(
         Object.fromEntries(Object.entries(variant).filter(([k]) => !["amount","ReturnUrl","payerName","remark","rechargeType"].includes(k)))
@@ -928,9 +939,18 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       } catch (e) {
         const msg = String(e);
         lastErr = msg;
-        // Stop cascade on auth/network errors; continue on type/validation errors
-        const isRecoverable = msg.toLowerCase().includes("type") || msg.includes("greater than 0") || msg.toLowerCase().includes("invalid") || msg.toLowerCase().includes("param");
-        if (!isRecoverable) { setSubmitError(msg); setSubmitting(false); return; }
+        const kind = classifyError(msg);
+        if (kind === "duplicate") {
+          // Order was already created (CORS ate the success response on first attempt).
+          setOrderDuplicate(true); setSubmitting(false); return;
+        }
+        if (kind === "unsupported") {
+          setChannelUnsupported(true); setSubmitting(false); return;
+        }
+        if (kind === "fatal") {
+          setSubmitError(msg); setSubmitting(false); return;
+        }
+        // "recoverable" → continue cascade
       }
     }
 
@@ -940,7 +960,11 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       const data = (d?.data ?? d) as Record<string, unknown>;
       setOrderResult(data && typeof data === "object" ? data : d);
     } catch (e) {
-      setSubmitError(`${lastErr}\n\nTried ${tried.length} payload variants + CreateThirdRechargeOrder.`);
+      const msg = String(e);
+      const kind = classifyError(msg);
+      if (kind === "duplicate") { setOrderDuplicate(true); }
+      else if (kind === "unsupported") { setChannelUnsupported(true); }
+      else { setSubmitError(`${lastErr}\n\nTried ${tried.length} payload variants + alternate endpoint.`); }
     } finally {
       setSubmitting(false);
     }
@@ -950,6 +974,60 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   function strPick(obj: Record<string, unknown>, keys: string[]): string | undefined {
     const v = pick(obj, keys);
     return v !== undefined ? String(v) : undefined;
+  }
+
+  if (orderDuplicate) {
+    return (
+      <SubPage title="⏳ Order Pending" onBack={() => { setOrderDuplicate(false); }}>
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-4 flex items-start gap-3">
+          <span className="text-2xl mt-0.5">⚠️</span>
+          <div>
+            <div className="text-amber-800 font-semibold text-sm mb-1">Order Already Created</div>
+            <div className="text-amber-700 text-sm leading-relaxed">
+              A deposit order for this amount was already submitted. CKLottery prevents creating duplicate orders while one is still pending.
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl shadow-sm p-4 mb-4 text-sm text-gray-600 leading-relaxed space-y-2">
+          <p>Your previous order is waiting for payment. To find your order details:</p>
+          <ol className="list-decimal list-inside space-y-1 text-gray-700">
+            <li>Go to <strong>Deposit History</strong> in the main menu</li>
+            <li>Find the pending order at the top of the list</li>
+            <li>Tap it to see the payment account, QR code, or payment link</li>
+          </ol>
+        </div>
+        <button
+          type="button"
+          className="w-full bg-blue-500 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80 mb-3"
+          onClick={() => setOrderDuplicate(false)}
+        >
+          ← Back to Deposit
+        </button>
+      </SubPage>
+    );
+  }
+
+  if (channelUnsupported) {
+    return (
+      <SubPage title="❌ Channel Unavailable" onBack={() => setChannelUnsupported(false)}>
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-5 mb-4 flex items-start gap-3">
+          <span className="text-2xl mt-0.5">🚫</span>
+          <div>
+            <div className="text-red-800 font-semibold text-sm mb-1">Channel Not Supported</div>
+            <div className="text-red-700 text-sm leading-relaxed">
+              This payment channel is not available for your account or region. Please select a different payment method.
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="w-full bg-blue-500 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80"
+          onClick={() => setChannelUnsupported(false)}
+        >
+          ← Choose Another Method
+        </button>
+      </SubPage>
+    );
   }
 
   if (orderResult) {
