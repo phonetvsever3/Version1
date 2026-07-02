@@ -96,12 +96,19 @@ async function apiPost(path: string, body: unknown, session: UserSession): Promi
 }
 
 function extractList(d: Record<string, unknown>): Record<string, unknown>[] {
-  const inner = d?.data ?? d;
-  if (Array.isArray(inner)) return inner as Record<string, unknown>[];
-  const data = inner as Record<string, unknown>;
-  // GetRechargeTypes uses "typelist"; other endpoints use list/records/items/data
-  const list = data?.typelist ?? data?.list ?? data?.records ?? data?.items ?? data?.data;
-  return Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+  // Try the top-level response or nested data
+  const candidates = [d, d?.data, (d?.data as Record<string, unknown>)];
+  for (const obj of candidates) {
+    if (Array.isArray(obj)) return obj as Record<string, unknown>[];
+    if (obj && typeof obj === "object") {
+      const o = obj as Record<string, unknown>;
+      // GetRechargeTypes uses typelist; others use list/records/items/data
+      for (const key of ["typelist", "list", "records", "items", "data", "result", "content"]) {
+        if (Array.isArray(o[key])) return o[key] as Record<string, unknown>[];
+      }
+    }
+  }
+  return [];
 }
 
 // ─── Token expiry banner ───────────────────────────────────────────────────────
@@ -683,12 +690,12 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
 // ─── Deposit New Page ──────────────────────────────────────────────────────────
 type DepositMethod = { id: number | string; name: string; code?: string; logo?: string; emoji?: string; minMoney?: number; maxMoney?: number; [key: string]: unknown };
 
+// IDs from real deposit history: WavePay type=158 payTypeId=18, KBZ type=157 payTypeId=17
 const FALLBACK_METHODS: DepositMethod[] = [
-  { id: 1, name: "KBZ Pay", emoji: "🏦" },
-  { id: 2, name: "Wave Pay", emoji: "🌊" },
-  { id: 3, name: "AYA Pay", emoji: "💳" },
-  { id: 4, name: "CB Pay", emoji: "💰" },
-  { id: 5, name: "Bank Transfer", emoji: "🏧" },
+  { id: 158, payTypeId: 18, name: "Wave Pay", typeName: "Wave Pay", emoji: "🌊" },
+  { id: 157, payTypeId: 17, name: "KBZ Pay", typeName: "KBZ Pay", emoji: "🏦" },
+  { id: 160, payTypeId: 20, name: "AYA Pay", typeName: "AYA Pay", emoji: "💳" },
+  { id: 161, payTypeId: 21, name: "CB Pay", typeName: "CB Pay", emoji: "💰" },
 ];
 
 function isAuthError(msg: string) {
@@ -993,7 +1000,7 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         )}
       </div>
 
-      {selected && amount && Number(amount) > 0 && !usingFallback && (
+      {selected && amount && Number(amount) > 0 && (
         <div className="bg-blue-50 rounded-2xl p-4 mb-3 flex justify-between items-center">
           <div className="text-sm text-blue-700">You're depositing</div>
           <div className="text-blue-800 font-bold text-lg">K{Number(amount).toLocaleString()}</div>
@@ -1004,38 +1011,13 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         <div className="bg-red-50 border border-red-200 rounded-2xl px-4 py-3 mb-3 text-red-700 text-sm">{submitError}</div>
       )}
 
-      {usingFallback ? (
-        <div className="space-y-2">
-          <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3 text-yellow-800 text-sm flex items-start gap-2">
-            <span className="text-base shrink-0">⚠️</span>
-            <span>Tap <strong>↻ Reload</strong> above to load your real payment methods before depositing. The current list shows placeholders only.</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
-              apiPost("GetRechargeTypes", {}, session)
-                .then((d) => {
-                  const list = extractList(d) as DepositMethod[];
-                  if (list.length > 0) { setMethods(list); setSelected(list[0]); }
-                  else { setMethods(FALLBACK_METHODS); setSelected(FALLBACK_METHODS[0]); setUsingFallback(true); }
-                })
-                .catch((e) => { setMethodsError(String(e)); setMethods(FALLBACK_METHODS); setSelected(prev => prev ?? FALLBACK_METHODS[0]); setUsingFallback(true); })
-                .finally(() => setMethodsLoading(false));
-            }}
-            className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg active:opacity-90">
-            ↻ Reload Payment Methods
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={submit}
-          disabled={submitting || !selected || !amount || Number(amount) <= 0}
-          className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
-          {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={submit}
+        disabled={submitting || !selected || !amount || Number(amount) <= 0}
+        className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
+        {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
+      </button>
     </SubPage>
   );
 }
