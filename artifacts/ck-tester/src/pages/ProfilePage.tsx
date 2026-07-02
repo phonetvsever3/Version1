@@ -1108,10 +1108,17 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [selected, setSelected] = useState<DepositMethod | null>(null);
   const [amount, setAmount] = useState("5000");
   const [payerName, setPayerName] = useState("");
+  const [payerPhone, setPayerPhone] = useState("");
   const [remark, setRemark] = useState("");
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [orderResult, setOrderResult] = useState<Record<string, unknown> | null>(null);
+  const [orderNo, setOrderNo] = useState("");
+  const [orderExpiry, setOrderExpiry] = useState<Date | null>(null);
+  const [secsLeft, setSecsLeft] = useState(0);
+  const [completingPayment, setCompletingPayment] = useState(false);
+  const [completeResult, setCompleteResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [orderDuplicate, setOrderDuplicate] = useState(false);
   const [channelUnsupported, setChannelUnsupported] = useState(false);
   const [utr, setUtr] = useState("");
@@ -1119,6 +1126,15 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   const [utrError, setUtrError] = useState("");
   const [utrSuccess, setUtrSuccess] = useState(false);
   const [methodsRawDebug, setMethodsRawDebug] = useState("");
+
+  // Countdown timer for active order
+  useEffect(() => {
+    if (!orderExpiry) return;
+    const tick = () => setSecsLeft(Math.max(0, Math.round((orderExpiry.getTime() - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [orderExpiry]);
 
   const DEFAULT_PRESETS = [1000, 2000, 5000, 10000, 20000, 50000];
 
@@ -1205,9 +1221,12 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
     const payTypeIDVal = Number(selObj.payTypeID ?? selObj.payTypeId ?? 0);
     const pasSysNum = Number(selObj.paySysName ?? selObj.sysName ?? 0);
 
+    setShowConfirmDialog(false);
     const extras: Record<string, unknown> = {};
     if (selected.code) extras.rechargeType = selected.code;
     if (payerName.trim()) extras.payerName = payerName.trim();
+    if (payerPhone.trim()) extras.payerPhone = payerPhone.trim();
+    if (payerPhone.trim()) extras.phone = payerPhone.trim();
     if (remark.trim()) extras.remark = remark.trim();
 
     const base = { amount: Number(amount), ReturnUrl: "https://www.cklottery.club/", ...extras };
@@ -1264,7 +1283,10 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       try {
         const d = await apiPost("CreateRechargeOrder", variant, session);
         const data = (d?.data ?? d) as Record<string, unknown>;
-        setOrderResult(data && typeof data === "object" ? data : d);
+        const result = (data && typeof data === "object" ? data : d) as Record<string, unknown>;
+        setOrderResult(result);
+        setOrderNo(String(result.orderNum ?? result.orderNo ?? result.serialNo ?? result.id ?? result.orderId ?? ""));
+        setOrderExpiry(new Date(Date.now() + 60 * 60 * 1000));
         setSubmitting(false);
         return;
       } catch (e) {
@@ -1304,7 +1326,10 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
         const msg2 = String((d?.msg ?? d?.message ?? "")).toLowerCase();
         if (msg2.includes("url is not exist") || msg2.includes("url not exist") || msg2.includes("not exist")) continue;
         const data = (d?.data ?? d) as Record<string, unknown>;
-        setOrderResult(data && typeof data === "object" ? data : d);
+        const result2 = (data && typeof data === "object" ? data : d) as Record<string, unknown>;
+        setOrderResult(result2);
+        setOrderNo(String(result2.orderNum ?? result2.orderNo ?? result2.serialNo ?? result2.id ?? result2.orderId ?? ""));
+        setOrderExpiry(new Date(Date.now() + 60 * 60 * 1000));
         setSubmitting(false);
         return;
       } catch (e) {
@@ -1382,115 +1407,226 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
   }
 
   if (orderResult) {
-    const payUrl = strPick(orderResult, ["payUrl", "url", "qrUrl", "payLink", "redirectUrl"]);
-    const qrCode = strPick(orderResult, ["qrCode", "qrCodeUrl", "scanCode", "qr"]);
-    const orderNo = strPick(orderResult, ["orderNum", "orderNo", "serialNo", "id", "orderId"]);
-    const bankAcc = strPick(orderResult, ["bankAccount", "accountNo", "receiveAccount", "bankNo", "cardNo"]);
-    const bankName = strPick(orderResult, ["bankName", "receiveBankName", "payBankName"]);
-    const holderName = strPick(orderResult, ["accountName", "receiveName", "holderName"]);
-    const ifsc = strPick(orderResult, ["ifscCode", "ifsc", "bankCode"]);
-    const upiId = strPick(orderResult, ["upiId", "upiAccount", "vpa"]);
+    const payUrl    = strPick(orderResult, ["payUrl", "url", "qrUrl", "payLink", "redirectUrl"]);
+    const qrCode    = strPick(orderResult, ["qrCode", "qrCodeUrl", "scanCode", "qr"]);
+    const bankAcc   = strPick(orderResult, ["bankAccount", "accountNo", "receiveAccount", "bankNo", "cardNo", "wavepayPhone", "wavePhone"]);
+    const bankName  = strPick(orderResult, ["bankName", "receiveBankName", "payBankName", "payType", "payTypeName"]);
+    const holderName = strPick(orderResult, ["accountName", "receiveName", "holderName", "wavepayName", "waveName"]);
+    const ifsc      = strPick(orderResult, ["ifscCode", "ifsc", "bankCode"]);
+    const upiId     = strPick(orderResult, ["upiId", "upiAccount", "vpa"]);
+    const methodLabel = (() => {
+      const s = selected as Record<string, unknown> | null;
+      return s ? String(s.payName ?? s.typeName ?? s.name ?? s.bankName ?? "Payment") : "Payment";
+    })();
+
+    // Countdown display
+    const mins = String(Math.floor(secsLeft / 60)).padStart(2, "0");
+    const secs = String(secsLeft % 60).padStart(2, "0");
+    const expired = orderExpiry ? secsLeft <= 0 : false;
+
+    // "Complete payment" — calls UpRechargesBankOrder / similar
+    async function completePayment() {
+      setCompletingPayment(true); setCompleteResult(null);
+      const payload: Record<string, unknown> = { orderNum: orderNo, orderNo };
+      const eps = ["UpRechargesBankOrder", "UpRechargesOrder", "ConfirmRechargeOrder", "ConfirmRecharge", "RechargeComplete", "PaymentComplete", "CompleteRecharge", "DepositComplete"];
+      for (const ep of eps) {
+        try {
+          const r = await apiPost(ep, payload, session);
+          const m = String(r.msg ?? r.message ?? "");
+          if (m.toLowerCase().includes("not exist")) continue;
+          setCompleteResult({ ok: true, msg: m || "Payment marked complete!" });
+          setCompletingPayment(false);
+          return;
+        } catch { /* try next */ }
+      }
+      setCompleteResult({ ok: false, msg: "Could not confirm — check Deposit History for status." });
+      setCompletingPayment(false);
+    }
 
     return (
-      <SubPage title="📋 Payment Details" onBack={() => setOrderResult(null)}>
-        <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-4 flex items-center gap-3">
-          <span className="text-2xl">✅</span>
-          <div>
-            <div className="text-green-800 font-semibold text-sm">Order Created!</div>
-            <div className="text-green-600 text-xs">Complete the payment below to top up your account.</div>
-          </div>
-        </div>
-
-        {orderNo && (
-          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
-            <div className="text-xs text-gray-400 mb-1">Order Number</div>
-            <div className="font-mono text-sm text-gray-800 break-all">{String(orderNo)}</div>
-          </div>
-        )}
-
-        {(bankAcc || bankName || holderName || ifsc || upiId) && (
-          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3 space-y-3">
-            <div className="text-sm font-semibold text-gray-700">Payment Instructions</div>
-            {bankName && <InfoRow label="Bank" value={String(bankName)} />}
-            {bankAcc && <InfoRow label="Account No." value={String(bankAcc)} copyable />}
-            {holderName && <InfoRow label="Account Name" value={String(holderName)} copyable />}
-            {ifsc && <InfoRow label="IFSC / Code" value={String(ifsc)} copyable />}
-            {upiId && <InfoRow label="UPI ID" value={String(upiId)} copyable />}
-          </div>
-        )}
-
-        {qrCode && (
-          <div className="bg-white rounded-2xl shadow-sm p-4 mb-3 flex flex-col items-center gap-2">
-            <div className="text-sm font-semibold text-gray-700">Scan QR Code</div>
-            <img src={String(qrCode)} alt="QR Code" className="w-48 h-48 object-contain rounded-xl border border-gray-100" />
-          </div>
-        )}
-
-        {payUrl && (
-          <a href={String(payUrl)} target="_blank" rel="noreferrer"
-            className="block w-full bg-blue-500 text-white text-center py-4 rounded-2xl font-bold text-base shadow mb-3 active:opacity-80">
-            Open Payment Page →
-          </a>
-        )}
-
-        {/* Show any other scalar fields not already displayed */}
-        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Full Order Details</div>
-          <RecordFields item={orderResult} skip={["payUrl","url","qrUrl","payLink","redirectUrl","qrCode","qrCodeUrl","scanCode","qr","orderNum","orderNo","serialNo","id","orderId","bankAccount","accountNo","receiveAccount","bankNo","cardNo","bankName","receiveBankName","payBankName","accountName","receiveName","holderName","ifscCode","ifsc","bankCode","upiId","upiAccount","vpa"]} />
-        </div>
-
-        {/* ── UTR / Transaction ID submission ── */}
-        <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
-          <div className="text-sm font-semibold text-gray-700 mb-1">Submit Transaction ID (UTR)</div>
-          <div className="text-xs text-gray-400 mb-3">After you complete the payment, enter your UTR or transaction reference number here to confirm your deposit.</div>
-          {utrSuccess ? (
-            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-green-700 text-sm flex items-center gap-2">
-              <span>✅</span> UTR submitted successfully! Your deposit is under review.
-            </div>
-          ) : (
+      <div className="min-h-screen bg-[#f0f4ff] flex flex-col">
+        {/* Blue header with countdown */}
+        <div className="bg-[#4169e1] text-white px-4 pt-12 pb-8 relative">
+          <button type="button" onClick={() => setOrderResult(null)} className="absolute left-4 top-12 text-white text-2xl">‹</button>
+          <div className="text-center font-bold text-lg mb-1">Deposit</div>
+          {!expired ? (
             <>
-              <input
-                type="text"
-                placeholder="Enter UTR / Transaction ID"
-                value={utr}
-                onChange={(e) => setUtr(e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50 mb-2"
-              />
-              {utrError && (
-                <div className="text-red-600 text-xs mb-2">{utrError}</div>
-              )}
-              <button
-                type="button"
-                disabled={utrSubmitting || !utr.trim()}
-                onClick={() => {
-                  if (!utr.trim()) return;
-                  setUtrSubmitting(true); setUtrError("");
-                  const utrPayload: Record<string, unknown> = {
-                    utr: utr.trim(),
-                    orderNum: orderNo ?? "",
-                  };
-                  apiPost("ArUpiSubmitUtr", utrPayload, session)
-                    .then(() => setUtrSuccess(true))
-                    .catch((e: unknown) => {
-                      // fallback: try UpRechargesBankOrder
-                      const errStr = String(e);
-                      if (errStr.toLowerCase().includes("not found") || errStr.includes("404")) {
-                        apiPost("UpRechargesBankOrder", { ...utrPayload, transactionId: utr.trim() }, session)
-                          .then(() => setUtrSuccess(true))
-                          .catch((e2: unknown) => setUtrError(String(e2)));
-                      } else {
-                        setUtrError(errStr);
-                      }
-                    })
-                    .finally(() => setUtrSubmitting(false));
-                }}
-                className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-bold py-3 rounded-xl text-sm shadow disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90">
-                {utrSubmitting ? "Submitting…" : "Submit UTR"}
-              </button>
+              <p className="text-center text-white/80 text-xs mb-4">Please complete the payment before the time ends</p>
+              <div className="flex justify-center gap-1 items-center">
+                {mins.split("").map((d, i) => (
+                  <div key={`m${i}`} className="w-9 h-10 bg-white/20 rounded-lg flex items-center justify-center text-xl font-bold text-red-300 border border-white/30">{d}</div>
+                ))}
+                <div className="text-white font-bold text-xl mx-1">:</div>
+                {secs.split("").map((d, i) => (
+                  <div key={`s${i}`} className="w-9 h-10 bg-white/20 rounded-lg flex items-center justify-center text-xl font-bold text-red-300 border border-white/30">{d}</div>
+                ))}
+              </div>
             </>
+          ) : (
+            <p className="text-center text-red-200 text-sm font-bold">⏰ Order expired — please create a new deposit</p>
           )}
         </div>
-      </SubPage>
+
+        <div className="flex-1 px-4 -mt-2 pb-28">
+          {/* Payment method card */}
+          <div className="bg-white rounded-2xl shadow-sm p-5 mb-4">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-base">💳</div>
+              <span className="font-bold text-gray-800">{methodLabel}</span>
+            </div>
+            <div className="space-y-4">
+              {holderName && (
+                <div>
+                  <div className="text-xs text-blue-400 mb-1">Full name</div>
+                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                    <span className="text-gray-800 text-sm font-medium">{holderName}</span>
+                    <button type="button" onClick={() => navigator.clipboard.writeText(holderName).catch(() => {})} className="text-gray-400 text-lg active:opacity-60">⧉</button>
+                  </div>
+                </div>
+              )}
+              {bankAcc && (
+                <div>
+                  <div className="text-xs text-blue-400 mb-1">Account</div>
+                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                    <span className="text-gray-800 text-sm font-medium">{bankAcc}</span>
+                    <button type="button" onClick={() => navigator.clipboard.writeText(bankAcc).catch(() => {})} className="text-gray-400 text-lg active:opacity-60">⧉</button>
+                  </div>
+                </div>
+              )}
+              {bankName && !holderName && (
+                <div>
+                  <div className="text-xs text-blue-400 mb-1">Bank</div>
+                  <div className="bg-gray-50 rounded-xl px-4 py-3 text-gray-800 text-sm font-medium">{bankName}</div>
+                </div>
+              )}
+              {ifsc && (
+                <div>
+                  <div className="text-xs text-blue-400 mb-1">IFSC / Code</div>
+                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                    <span className="text-gray-800 text-sm font-medium">{ifsc}</span>
+                    <button type="button" onClick={() => navigator.clipboard.writeText(ifsc).catch(() => {})} className="text-gray-400 text-lg active:opacity-60">⧉</button>
+                  </div>
+                </div>
+              )}
+              {upiId && (
+                <div>
+                  <div className="text-xs text-blue-400 mb-1">UPI ID</div>
+                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                    <span className="text-gray-800 text-sm font-medium">{upiId}</span>
+                    <button type="button" onClick={() => navigator.clipboard.writeText(upiId).catch(() => {})} className="text-gray-400 text-lg active:opacity-60">⧉</button>
+                  </div>
+                </div>
+              )}
+              <div>
+                <div className="text-xs text-blue-400 mb-1">Balance</div>
+                <div className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                  <span className="text-gray-800 text-sm font-medium">{amount}</span>
+                  <button type="button" onClick={() => navigator.clipboard.writeText(amount).catch(() => {})} className="text-gray-400 text-lg active:opacity-60">⧉</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Order number */}
+          {orderNo && (
+            <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+              <div className="text-xs text-gray-400 mb-1">Order number</div>
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-xs text-gray-700 break-all flex-1 mr-2">{orderNo}</span>
+                <button type="button" onClick={() => navigator.clipboard.writeText(orderNo).catch(() => {})} className="text-gray-400 text-lg shrink-0 active:opacity-60">⧉</button>
+              </div>
+            </div>
+          )}
+
+          {/* QR code */}
+          {qrCode && (
+            <div className="bg-white rounded-2xl shadow-sm p-4 mb-4 flex flex-col items-center gap-2">
+              <div className="text-sm font-semibold text-gray-700">Scan QR Code</div>
+              <img src={String(qrCode)} alt="QR Code" className="w-48 h-48 object-contain rounded-xl border border-gray-100" />
+            </div>
+          )}
+
+          {/* Pay URL */}
+          {payUrl && (
+            <a href={String(payUrl)} target="_blank" rel="noreferrer"
+              className="block w-full bg-blue-500 text-white text-center py-4 rounded-2xl font-bold text-base shadow mb-4 active:opacity-80">
+              Open Payment Page →
+            </a>
+          )}
+
+          {/* Recharge instructions */}
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xl">📘</span>
+              <span className="font-semibold text-gray-800 text-sm">Recharge instructions</span>
+            </div>
+            <ul className="text-xs text-gray-600 space-y-1.5">
+              <li className="flex items-start gap-1.5"><span className="text-blue-500 mt-0.5">◆</span> If the transfer time is up, please fill out the deposit form again.</li>
+              <li className="flex items-start gap-1.5"><span className="text-blue-500 mt-0.5">◆</span> Send exactly the amount shown — wrong amounts may not be credited.</li>
+              <li className="flex items-start gap-1.5"><span className="text-blue-500 mt-0.5">◆</span> After sending, tap <strong>Complete payment</strong> below.</li>
+            </ul>
+          </div>
+
+          {/* All raw fields */}
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Full Order Details</div>
+            <RecordFields item={orderResult} skip={["payUrl","url","qrUrl","payLink","redirectUrl","qrCode","qrCodeUrl","scanCode","qr","bankAccount","accountNo","receiveAccount","bankNo","cardNo","wavepayPhone","wavePhone","bankName","receiveBankName","payBankName","payType","payTypeName","accountName","receiveName","holderName","wavepayName","waveName","ifscCode","ifsc","bankCode","upiId","upiAccount","vpa"]} />
+          </div>
+
+          {/* UTR submission */}
+          <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
+            <div className="text-sm font-semibold text-gray-700 mb-1">Submit Transaction ID (UTR)</div>
+            <div className="text-xs text-gray-400 mb-3">After completing the payment, enter your transaction ID here to confirm your deposit.</div>
+            {utrSuccess ? (
+              <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-green-700 text-sm flex items-center gap-2">
+                <span>✅</span> UTR submitted! Your deposit is under review.
+              </div>
+            ) : (
+              <>
+                <input type="text" placeholder="Enter UTR / Transaction ID" value={utr} onChange={(e) => setUtr(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-400 bg-gray-50 mb-2" />
+                {utrError && <div className="text-red-600 text-xs mb-2">{utrError}</div>}
+                <button type="button" disabled={utrSubmitting || !utr.trim()}
+                  onClick={() => {
+                    if (!utr.trim()) return;
+                    setUtrSubmitting(true); setUtrError("");
+                    const utrPayload: Record<string, unknown> = { utr: utr.trim(), orderNum: orderNo };
+                    apiPost("ArUpiSubmitUtr", utrPayload, session)
+                      .then(() => setUtrSuccess(true))
+                      .catch(() => apiPost("UpRechargesBankOrder", { ...utrPayload, transactionId: utr.trim() }, session)
+                        .then(() => setUtrSuccess(true))
+                        .catch((e2: unknown) => setUtrError(String(e2))))
+                      .finally(() => setUtrSubmitting(false));
+                  }}
+                  className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-bold py-3 rounded-xl text-sm shadow disabled:opacity-50 active:opacity-90">
+                  {utrSubmitting ? "Submitting…" : "Submit UTR"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom action bar — Cancel | Complete payment */}
+        <div className="fixed bottom-0 left-0 right-0 flex bg-white border-t border-gray-100 shadow-lg">
+          <button type="button" onClick={() => setOrderResult(null)}
+            className="flex-1 py-4 text-gray-600 font-semibold text-sm border-r border-gray-100 active:bg-gray-50">
+            Return
+          </button>
+          <button type="button" onClick={completePayment} disabled={completingPayment || expired}
+            className="flex-1 py-4 bg-blue-500 text-white font-bold text-sm disabled:opacity-50 active:opacity-80">
+            {completingPayment ? "Processing…" : "Payment is completed"}
+          </button>
+        </div>
+
+        {/* Complete result toast */}
+        {completeResult && (
+          <div className={`fixed top-16 left-4 right-4 rounded-2xl p-4 shadow-xl z-50 ${completeResult.ok ? "bg-green-600" : "bg-gray-700"} text-white`}>
+            <div className="font-bold text-sm mb-1">{completeResult.ok ? "✅ Confirmed!" : "ℹ️ Note"}</div>
+            <div className="text-xs opacity-90">{completeResult.msg}</div>
+            <button type="button" onClick={() => setCompleteResult(null)} className="absolute top-3 right-3 text-white/70 text-lg">×</button>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -1627,11 +1763,59 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
 
       <button
         type="button"
-        onClick={submit}
+        onClick={() => {
+          if (!selected || !amount || Number(amount) <= 0) return;
+          if (usingFallback) { setSubmitError("Payment methods could not be loaded. Tap ↻ Reload above."); return; }
+          setShowConfirmDialog(true);
+        }}
         disabled={submitting || !selected || !amount || Number(amount) <= 0}
         className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold py-4 rounded-2xl text-base shadow-lg disabled:opacity-50 disabled:cursor-not-allowed active:opacity-90 transition-opacity">
         {submitting ? "Creating Order…" : `Deposit K${Number(amount || 0).toLocaleString()}`}
       </button>
+
+      {/* Confirmation dialog — payer name + phone */}
+      {showConfirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
+          <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden">
+            <div className="bg-blue-500 px-5 py-4 flex items-center justify-between">
+              <span className="text-white font-bold text-base">Notification</span>
+              <button type="button" onClick={() => setShowConfirmDialog(false)} className="text-white/80 text-xl leading-none">×</button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              {(() => {
+                const s = selected as Record<string, unknown>;
+                const name = String(s?.payName ?? s?.typeName ?? s?.name ?? "Wave");
+                return (
+                  <>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">{name} နာမည်</label>
+                      <input type="text" placeholder={`Your ${name} name`} value={payerName}
+                        onChange={(e) => setPayerName(e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-400 bg-gray-50" />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-700 mb-1.5 font-medium">{name} အကောင့်ဖုန်းနံပါတ်</label>
+                      <input type="tel" placeholder="Phone number" value={payerPhone}
+                        onChange={(e) => setPayerPhone(e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-400 bg-gray-50" />
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+            <div className="px-5 pb-5 space-y-2">
+              <button type="button" onClick={submit}
+                className="w-full bg-blue-500 text-white font-bold py-3.5 rounded-2xl text-sm active:opacity-80">
+                Confirm
+              </button>
+              <button type="button" onClick={() => setShowConfirmDialog(false)}
+                className="w-full border border-gray-200 text-gray-600 font-medium py-3.5 rounded-2xl text-sm active:opacity-80">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </SubPage>
   );
 }
