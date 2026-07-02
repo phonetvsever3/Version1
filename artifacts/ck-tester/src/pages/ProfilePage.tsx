@@ -606,9 +606,9 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
     if (!selected || !amount || Number(amount) <= 0) return;
     setSubmitting(true); setSubmitError("");
     const payload: Record<string, unknown> = {
-      rechargeTypeId: selected.id,
-      rechargeAmount: Number(amount),
-      money: Number(amount),
+      amount: Number(amount),
+      type: Number(selected.id),
+      ReturnUrl: "https://www.cklottery.club/",
     };
     if (selected.code) payload.rechargeType = selected.code;
     apiPost("CreateRechargeOrder", payload, session)
@@ -733,11 +733,20 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
       <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-semibold text-gray-700">Payment Method</div>
-          {usingFallback && !methodsError && (
-            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Default</span>
-          )}
-          {usingFallback && methodsError && !isAuthError(methodsError) && (
-            <span className="text-xs text-orange-500">API unavailable</span>
+          {usingFallback && (
+            <button type="button" onClick={() => {
+              setMethodsLoading(true); setMethodsError(""); setUsingFallback(false);
+              apiPost("GetRechargeTypes", {}, session)
+                .then((d) => {
+                  const list = extractList(d) as DepositMethod[];
+                  if (list.length > 0) { setMethods(list); setSelected(list[0]); }
+                  else { setMethods(FALLBACK_METHODS); setSelected(FALLBACK_METHODS[0]); setUsingFallback(true); }
+                })
+                .catch((e) => { setMethodsError(String(e)); setMethods(FALLBACK_METHODS); setSelected(prev => prev ?? FALLBACK_METHODS[0]); setUsingFallback(true); })
+                .finally(() => setMethodsLoading(false));
+            }} className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full active:opacity-70">
+              ↻ Reload
+            </button>
           )}
         </div>
         {methodsLoading && <div className="text-center py-6 text-gray-400 text-sm">Loading methods…</div>}
