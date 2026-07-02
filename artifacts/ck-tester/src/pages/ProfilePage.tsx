@@ -687,6 +687,50 @@ function MainPage({ claims, userInfo, balance, tokenExpired, onNav, onLogout }: 
   );
 }
 
+// ─── Deposit How-To Guide ──────────────────────────────────────────────────────
+function DepositHowTo() {
+  const [open, setOpen] = useState(false);
+  const steps = [
+    { icon: "1️⃣", title: "Enter the amount", desc: "Type how much you want to deposit (e.g. K5,000), or tap a preset button." },
+    { icon: "2️⃣", title: "Select a payment method", desc: "Choose Wave Pay, KBZ Pay, AYA Pay, or CB Pay. The one with ✓ is selected." },
+    { icon: "3️⃣", title: "Tap the Deposit button", desc: 'Tap the blue "Deposit K…" button at the bottom. Wait a moment.' },
+    { icon: "4️⃣", title: "You'll see payment details", desc: "The app will show you a bank account number, QR code, or payment link." },
+    { icon: "5️⃣", title: "Transfer the money", desc: "Open Wave Pay / KBZ Pay on your phone and send the exact amount to the account shown." },
+    { icon: "6️⃣", title: "Submit your Transaction ID (UTR)", desc: "After sending, paste your transaction reference number into the UTR box and tap Submit UTR." },
+  ];
+
+  return (
+    <div className="mb-3 rounded-2xl border border-green-100 bg-green-50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2 text-green-700 font-semibold text-sm">
+          <span>📖</span> How to deposit — tap to see steps
+        </div>
+        <span className="text-green-400 text-lg">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3">
+          {steps.map((s, i) => (
+            <div key={i} className="flex gap-3 items-start">
+              <span className="text-xl shrink-0 leading-none mt-0.5">{s.icon}</span>
+              <div>
+                <div className="text-sm font-semibold text-gray-800">{s.title}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{s.desc}</div>
+              </div>
+            </div>
+          ))}
+          <div className="bg-yellow-50 border border-yellow-200 rounded-xl px-3 py-2 text-xs text-yellow-800 mt-1">
+            ⚠️ Make sure you send the <strong>exact</strong> amount shown. Wrong amounts may not be credited.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Deposit New Page ──────────────────────────────────────────────────────────
 type DepositMethod = { id: number | string; name: string; code?: string; logo?: string; emoji?: string; minMoney?: number; maxMoney?: number; [key: string]: unknown };
 
@@ -893,6 +937,9 @@ function DepositNewPage({ session, onBack, onLogout }: { session: UserSession; o
 
   return (
     <SubPage title="💰 Add Money" onBack={onBack}>
+      {/* How-to guide */}
+      <DepositHowTo />
+
       {/* Amount input */}
       <div className="bg-white rounded-2xl shadow-sm p-5 mb-3">
         <div className="text-sm font-semibold text-gray-700 mb-3">Enter Amount (MMK)</div>

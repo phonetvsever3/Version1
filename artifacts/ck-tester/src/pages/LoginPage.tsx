@@ -1,6 +1,103 @@
 import { useState } from "react";
 import type { UserSession } from "../App";
 
+const CONSOLE_CMDS = [
+  { label: "token", cmd: `localStorage.getItem('token')` },
+  { label: "tokenHeader", cmd: `localStorage.getItem('tokenHeader')` },
+];
+
+function HowToGuide() {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  function copy(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      setTimeout(() => setCopied(null), 2000);
+    }).catch(() => {});
+  }
+
+  return (
+    <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2 text-blue-700 font-semibold text-sm">
+          <span>📖</span> How to get your Token (step by step)
+        </div>
+        <span className="text-blue-400 text-lg">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-3 text-sm">
+          {/* Step 1 */}
+          <div className="flex gap-3">
+            <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold shrink-0">1</div>
+            <div>
+              <div className="font-semibold text-gray-800">Open cklottery.club and log in</div>
+              <div className="text-gray-500 text-xs mt-0.5">Use your normal phone/email and password to log in on the website.</div>
+              <a href="https://cklottery.club" target="_blank" rel="noreferrer"
+                className="inline-block mt-1 text-xs text-blue-600 underline">
+                → Open cklottery.club
+              </a>
+            </div>
+          </div>
+
+          {/* Step 2 */}
+          <div className="flex gap-3">
+            <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold shrink-0">2</div>
+            <div>
+              <div className="font-semibold text-gray-800">Open the browser console</div>
+              <div className="text-gray-500 text-xs mt-1 leading-relaxed">
+                <strong>Android Chrome/Brave:</strong> tap the address bar, type <code className="bg-white px-1 rounded border border-gray-200">chrome://inspect</code> — or shake to open DevTools if enabled.<br />
+                <strong>Desktop:</strong> press <code className="bg-white px-1 rounded border border-gray-200">F12</code> → Console tab.
+              </div>
+            </div>
+          </div>
+
+          {/* Step 3 */}
+          <div className="flex gap-3">
+            <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold shrink-0">3</div>
+            <div className="flex-1">
+              <div className="font-semibold text-gray-800">Run these commands one by one</div>
+              <div className="text-gray-500 text-xs mt-0.5 mb-2">Tap Copy, paste into console, press Enter, copy the result.</div>
+              {CONSOLE_CMDS.map((c) => (
+                <div key={c.label} className="mb-2 bg-white border border-gray-200 rounded-xl p-2.5">
+                  <div className="text-xs text-gray-400 mb-1">For <strong>{c.label}</strong>:</div>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-[11px] text-gray-800 break-all">{c.cmd}</code>
+                    <button type="button" onClick={() => copy(c.cmd, c.label)}
+                      className="shrink-0 bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded-lg font-medium active:opacity-70">
+                      {copied === c.label ? "✓ Copied" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Step 4 */}
+          <div className="flex gap-3">
+            <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs font-bold shrink-0">4</div>
+            <div>
+              <div className="font-semibold text-gray-800">Paste the results above ↑</div>
+              <div className="text-gray-500 text-xs mt-0.5">
+                Paste the <strong>token</strong> value in the big box and <strong>tokenHeader</strong> in the small box, then tap <em>View Profile Stats</em>.
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-yellow-50 border border-yellow-200 rounded-xl px-3 py-2 text-xs text-yellow-800">
+            ⚠️ The token expires after a few hours. If you see "Token Expired", repeat steps 1–4 to get a fresh one.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CK_API = "https://ckygjf6r.com/api/webapi";
 
 const COUNTRY_CODES = [
@@ -312,9 +409,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         ) : (
           <form onSubmit={handleTokenLogin} className="space-y-4">
             <p className="text-sm text-gray-500">
-              Log in to <strong>cklottery.club</strong> in your browser, then
-              open DevTools → Application → Local Storage and copy the values:
+              Log in to <strong>cklottery.club</strong> in your browser, run two console commands, then paste the results below.
             </p>
+            <HowToGuide />
             <div>
               <label className="block text-blue-500 text-sm font-medium mb-2">
                 🔑 Token (from localStorage key <code className="bg-gray-100 px-1 rounded">token</code>)
