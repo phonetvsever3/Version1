@@ -7,6 +7,7 @@ export interface UserSession {
   token: string;
   tokenHeader: string;
   refreshToken: string;
+  cfClearance?: string;
 }
 
 export default function App() {
@@ -32,6 +33,13 @@ export default function App() {
     setUserInfo(merged);
   }
 
+  function handleUpdateSession(updates: Partial<UserSession>) {
+    if (!session) return;
+    const updated = { ...session, ...updates };
+    sessionStorage.setItem("ck_session", JSON.stringify(updated));
+    setSession(updated);
+  }
+
   function handleLogout() {
     sessionStorage.removeItem("ck_session");
     sessionStorage.removeItem("ck_userinfo");
@@ -45,6 +53,7 @@ export default function App() {
         session={session}
         initialUserInfo={userInfo}
         onLogout={handleLogout}
+        onUpdateSession={handleUpdateSession}
       />
     );
   }
