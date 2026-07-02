@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { UserSession } from "../App";
 import { decodeJwt } from "../utils/jwt";
-import { ckSign, CK_API_BASE } from "../utils/ckSign";
+import { CK_API_BASE } from "../utils/ckSign";
 
 interface ProfilePageProps {
   session: UserSession;
@@ -36,8 +36,18 @@ function parseApiJson(text: string, httpStatus: number): Record<string, unknown>
 }
 
 // Try calling CKLottery API directly from the browser (works on mobile — no Cloudflare block)
+// Uses the proxy's /sign endpoint to get a correctly signed body (avoids client-side MD5 bugs)
 async function apiPostDirect(path: string, body: Record<string, unknown>, session: UserSession): Promise<Record<string, unknown>> {
-  const signed = ckSign(body);
+  // Step 1: get a server-signed body
+  const signRes = await fetch("/api/proxy/sign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!signRes.ok) throw new Error("Signing service unavailable");
+  const signed = await signRes.json() as Record<string, unknown>;
+
+  // Step 2: call CKLottery directly from the browser
   const tokenHeader = (session.tokenHeader || "Bearer").trim();
   const res = await fetch(`${CK_API_BASE}/${path}`, {
     method: "POST",

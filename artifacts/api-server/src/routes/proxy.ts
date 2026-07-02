@@ -142,6 +142,17 @@ router.post("/proxy/refresh", async (req, res) => {
   }
 });
 
+// Sign-only endpoint — returns a signed body for the client to use in direct API calls
+router.post("/proxy/sign", (req, res) => {
+  try {
+    const signed = ckSign(req.body ?? {});
+    res.json(signed);
+  } catch (err) {
+    logger.error({ err }, "Sign error");
+    res.status(500).json({ error: "Signing failed" });
+  }
+});
+
 // Generic wildcard proxy — signs and forwards any POST to CKLottery
 router.post("/proxy/ck/:endpoint", async (req, res) => {
   const { endpoint } = req.params;
