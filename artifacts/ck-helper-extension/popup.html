@@ -8,149 +8,100 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     width: 340px;
-    min-height: 200px;
     background: #0f0f0f;
     color: #fff;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    padding: 16px;
+    padding: 14px;
   }
-  h2 {
-    font-size: 15px;
-    font-weight: 700;
-    color: #facc15;
-    margin-bottom: 14px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .field {
-    margin-bottom: 10px;
-  }
-  .label {
-    font-size: 10px;
-    color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 4px;
-  }
-  .row {
-    display: flex;
-    gap: 6px;
-    align-items: stretch;
-  }
-  .value {
-    flex: 1;
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 8px;
-    padding: 8px 10px;
-    font-size: 11px;
-    color: #aaa;
-    font-family: monospace;
-    word-break: break-all;
-    max-height: 64px;
-    overflow-y: auto;
-    line-height: 1.4;
-  }
-  .value.found { color: #86efac; border-color: #166534; }
-  .value.missing { color: #f87171; border-color: #7f1d1d; font-style: italic; }
-  button.copy {
-    background: #2563eb;
-    border: none;
-    border-radius: 8px;
-    color: #fff;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 0 12px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s;
-  }
-  button.copy:hover { background: #1d4ed8; }
-  button.copy:active { background: #1e40af; }
-  button.copy.copied { background: #16a34a; }
-  button.copy:disabled { background: #374151; cursor: not-allowed; }
-  .divider {
-    border: none;
-    border-top: 1px solid #222;
-    margin: 12px 0;
-  }
-  .btn-scan {
-    width: 100%;
-    background: linear-gradient(135deg, #f97316, #facc15);
-    border: none;
-    border-radius: 10px;
-    color: #000;
-    font-size: 13px;
-    font-weight: 700;
-    padding: 10px;
-    cursor: pointer;
-    margin-bottom: 14px;
-    transition: opacity 0.15s;
-  }
-  .btn-scan:hover { opacity: 0.9; }
-  .btn-scan:active { opacity: 0.75; }
-  .json-box {
-    background: #111;
-    border: 1px solid #1d4ed8;
-    border-radius: 8px;
-    padding: 8px 10px;
-    font-size: 10px;
-    color: #60a5fa;
-    font-family: monospace;
-    word-break: break-all;
-    line-height: 1.5;
-  }
-  .note {
-    font-size: 10px;
-    color: #555;
-    margin-top: 8px;
-    line-height: 1.5;
-  }
-  .status {
-    font-size: 11px;
-    color: #888;
-    text-align: center;
-    padding: 8px 0;
-  }
+  h2 { font-size: 15px; font-weight: 700; color: #facc15; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tab { flex:1; padding: 7px 0; border-radius: 8px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s; background: #1a1a1a; color: #888; }
+  .tab.active { background: #facc15; color: #000; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Extract tab */
+  .field { margin-bottom: 10px; }
+  .label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .row { display: flex; gap: 6px; align-items: stretch; }
+  .value { flex:1; background:#1a1a1a; border:1px solid #333; border-radius:8px; padding:7px 10px; font-size:11px; color:#aaa; font-family:monospace; word-break:break-all; max-height:58px; overflow-y:auto; line-height:1.4; }
+  .value.found { color:#86efac; border-color:#166534; }
+  .value.missing { color:#f87171; border-color:#7f1d1d; font-style:italic; }
+  button.copy { background:#2563eb; border:none; border-radius:8px; color:#fff; font-size:11px; font-weight:600; padding:0 12px; cursor:pointer; white-space:nowrap; transition:background 0.15s; }
+  button.copy:hover { background:#1d4ed8; }
+  button.copy.copied { background:#16a34a; }
+  button.copy:disabled { background:#374151; cursor:not-allowed; }
+  .json-box { background:#111; border:1px solid #1d4ed8; border-radius:8px; padding:8px 10px; font-size:10px; color:#60a5fa; font-family:monospace; word-break:break-all; line-height:1.5; max-height:80px; overflow-y:auto; }
+
+  /* Actions tab */
+  .action-btn { width:100%; padding:11px; border-radius:10px; border:none; font-size:13px; font-weight:700; cursor:pointer; margin-bottom:8px; transition:opacity 0.15s; display:flex; align-items:center; justify-content:center; gap:8px; }
+  .action-btn:active { opacity:0.75; }
+  .action-btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn-spin { background: linear-gradient(135deg, #f97316, #facc15); color:#000; }
+  .btn-addspin { background: linear-gradient(135deg, #2563eb, #06b6d4); color:#fff; }
+  .btn-scan { background: linear-gradient(135deg, #7c3aed, #a78bfa); color:#fff; }
+  .result-box { border-radius:10px; padding:10px 12px; font-size:11px; line-height:1.5; margin-bottom:8px; word-break:break-all; }
+  .result-ok { background:#052e16; border:1px solid #166534; color:#86efac; }
+  .result-err { background:#1c0505; border:1px solid #7f1d1d; color:#fca5a5; }
+  .result-info { background:#0c1a2e; border:1px solid #1e3a5f; color:#93c5fd; }
+  .result-pre { font-family:monospace; font-size:10px; color:#888; margin-top:6px; max-height:80px; overflow-y:auto; white-space:pre-wrap; }
+
+  .divider { border:none; border-top:1px solid #222; margin:10px 0; }
+  .note { font-size:10px; color:#555; margin-top:6px; line-height:1.5; }
+  .status { font-size:11px; color:#666; text-align:center; padding:6px 0; }
 </style>
 </head>
 <body>
 <h2>🎰 CK Helper</h2>
 
-<button class="btn-scan" id="btnScan">🔍 Scan current tab</button>
-
-<div class="field">
-  <div class="label">cf_clearance (cookie)</div>
-  <div class="row">
-    <div class="value missing" id="valCf">Not found</div>
-    <button class="copy" id="copyCf" disabled>Copy</button>
-  </div>
+<div class="tabs">
+  <button class="tab active" data-tab="actions">⚡ Actions</button>
+  <button class="tab" data-tab="extract">🔑 Extract</button>
 </div>
 
-<div class="field">
-  <div class="label">token (localStorage)</div>
-  <div class="row">
-    <div class="value missing" id="valToken">Not found</div>
-    <button class="copy" id="copyToken" disabled>Copy</button>
-  </div>
+<!-- ACTIONS TAB -->
+<div class="panel active" id="tab-actions">
+  <div class="result-box result-info" id="tabStatus">Open cklottery.club → log in → come back here.</div>
+
+  <button class="action-btn btn-spin" id="btnSpin">🎰 Spin Now (SpinInvitedWheel)</button>
+  <button class="action-btn btn-addspin" id="btnAddSpin">➕ Add 1 Spin</button>
+  <hr class="divider">
+  <button class="action-btn btn-scan" id="btnGetInfo" style="font-size:12px;">📊 Get Wheel Info</button>
+
+  <div id="actionResult" style="display:none"></div>
 </div>
 
-<div class="field">
-  <div class="label">tokenHeader (localStorage)</div>
-  <div class="row">
-    <div class="value missing" id="valHeader">Not found</div>
-    <button class="copy" id="copyHeader" disabled>Copy</button>
+<!-- EXTRACT TAB -->
+<div class="panel" id="tab-extract">
+  <button class="action-btn btn-scan" id="btnScan" style="margin-bottom:12px;">🔍 Scan current tab</button>
+
+  <div class="field">
+    <div class="label">cf_clearance (cookie)</div>
+    <div class="row">
+      <div class="value missing" id="valCf">Not found</div>
+      <button class="copy" id="copyCf" disabled>Copy</button>
+    </div>
   </div>
+  <div class="field">
+    <div class="label">token (localStorage)</div>
+    <div class="row">
+      <div class="value missing" id="valToken">Not found</div>
+      <button class="copy" id="copyToken" disabled>Copy</button>
+    </div>
+  </div>
+  <div class="field">
+    <div class="label">tokenHeader (localStorage)</div>
+    <div class="row">
+      <div class="value missing" id="valHeader">Not found</div>
+      <button class="copy" id="copyHeader" disabled>Copy</button>
+    </div>
+  </div>
+  <hr class="divider">
+  <div class="label" style="margin-bottom:6px;">JSON (paste into CK Tester)</div>
+  <div class="json-box" id="jsonOut">—</div>
+  <button class="copy" id="copyJson" style="width:100%;margin-top:6px;" disabled>Copy JSON</button>
+  <p class="note">cf_clearance may be empty — that's OK if your phone is not Cloudflare-blocked.</p>
 </div>
-
-<hr class="divider">
-
-<div class="label" style="margin-bottom:6px;">JSON (paste into CK Tester session field)</div>
-<div class="json-box" id="jsonOut">—</div>
-<button class="copy" id="copyJson" style="width:100%;margin-top:6px;" disabled>Copy JSON</button>
-
-<p class="note">Open <strong>cklottery.club</strong> or <strong>ckygjf6r.com</strong> first, log in, then tap Scan.</p>
 
 <script src="popup.js"></script>
 </body>
