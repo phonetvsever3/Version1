@@ -994,7 +994,6 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
   const diskAmounts: number[] = Array.isArray(data?.diskDisplayAmount)
     ? (data!.diskDisplayAmount as unknown[]).map(Number)
     : [];
-  const totalPrize = data ? Number(data.invitedWheelTotalPrizeAmount ?? data.totalPrize ?? data.prizeAmount ?? 0) : 0;
 
   const prizes: Record<string, unknown>[] = (() => {
     if (!data) return [];
