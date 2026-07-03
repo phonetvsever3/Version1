@@ -966,23 +966,29 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
   // Extract useful fields from wheel info
   const data = wheelInfo ? ((wheelInfo.data ?? wheelInfo) as Record<string, unknown>) : null;
 
-  // GetInvitedWheelInfo fields: userInvitedWheelCount (total), userInvitedWheelAmount (used)
-  const totalSpins = data ? Number(
-    data.userInvitedWheelCount ?? data.totalTimes ?? data.total ?? data.maxTimes ?? data.totalCount ?? 0
-  ) : 0;
-  const usedSpins = data ? Number(
-    data.userInvitedWheelAmount ?? data.usedTimes ?? data.usedCount ?? data.used ?? 0
-  ) : 0;
+  // NOTE: userInvitedWheelAmount = accumulated prize money (K8,936), NOT spin count
+  // NOTE: userInvitedWheelCount  = total invited count, NOT spin count
+  // Actual spin count fields (to be confirmed from raw data dump below):
   const remainSpins = data ? (() => {
-    // Try explicit remain fields first
-    for (const k of ["remainTimes","remainCount","times","spinCount","remainSpins","count","num","leftTimes","leftCount"]) {
-      const v = (data as Record<string, unknown>)[k];
+    const candidates = [
+      "remainTimes","remainCount","times","spinCount","remainSpins","leftTimes","leftCount",
+      "wheelTimes","spinTimes","invitedWheelTimes","remainWheelCount","remainWheelTimes",
+      "invitedTimes","luckyWheelTimes","turntableTimes","drawTimes","activityTimes",
+      "count","num","totalCount","totalTimes","maxTimes",
+    ];
+    for (const k of candidates) {
+      const v = data[k];
       if (v !== undefined && v !== null && Number(v) > 0) return Number(v);
     }
-    // Derive: total - used
-    if (totalSpins > 0) return Math.max(0, totalSpins - usedSpins);
     return 0;
   })() : 0;
+
+  // For display: show accumulated prize amount from the confirmed field
+  const accumulatedPrize = data ? Number(
+    data.userInvitedWheelAmount ?? data.invitedWheelAmount ?? data.accumulatedAmount ?? 0
+  ) : 0;
+  const totalPrize = data ? Number(data.invitedWheelTotalPrizeAmount ?? data.totalPrize ?? data.prizeAmount ?? 0) : 0;
+  const progressPct = totalPrize > 0 ? Math.min(100, (accumulatedPrize / totalPrize) * 100) : 0;
 
   // Prize amounts — GetInvitedWheelInfo returns diskDisplayAmount as array of numbers
   const diskAmounts: number[] = Array.isArray(data?.diskDisplayAmount)
@@ -1015,22 +1021,37 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
 
       <div className="flex-1 px-4 pb-24">
 
-        {/* Spin count banner */}
+        {/* Spin count + accumulated prize banner */}
         {!infoLoading && !infoError && (
-          <div className="flex justify-center mb-3 gap-3">
-            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-5 py-3 text-center">
-              <div className="text-yellow-300 text-xs mb-1 font-medium">Remaining Spins</div>
-              <div className="text-white text-3xl font-bold">{remainSpins}</div>
-              <div className="text-yellow-400/50 text-[10px] mt-1">{usedSpins} used / {totalSpins} total</div>
-              {infoEp && <div className="text-yellow-400/30 text-[9px] mt-0.5 font-mono">{infoEp}</div>}
-            </div>
-            {totalPrize > 0 && (
-              <div className="bg-orange-500/10 border border-orange-400/30 rounded-2xl px-5 py-3 text-center">
-                <div className="text-orange-300 text-xs mb-1 font-medium">Total Prize</div>
-                <div className="text-white text-2xl font-bold">K{totalPrize.toLocaleString()}</div>
-                <div className="text-orange-400/50 text-[10px] mt-1">reward pool</div>
+          <div className="mb-3 space-y-3">
+            {/* Accumulated prize row */}
+            {accumulatedPrize > 0 && (
+              <div className="bg-orange-500/10 border border-orange-400/30 rounded-2xl px-4 py-3">
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-orange-300 text-xs font-medium">My Amount</span>
+                  <span className="text-white font-bold text-lg">K{accumulatedPrize.toLocaleString()}</span>
+                </div>
+                {totalPrize > 0 && (
+                  <>
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-orange-500 to-yellow-400 rounded-full transition-all" style={{ width: `${progressPct}%` }} />
+                    </div>
+                    <div className="text-orange-400/60 text-[10px] mt-1 text-right">
+                      K{(totalPrize - accumulatedPrize).toLocaleString()} more to reach K{totalPrize.toLocaleString()} prize
+                    </div>
+                  </>
+                )}
+                {infoEp && <div className="text-orange-400/30 text-[9px] mt-0.5 font-mono">{infoEp}</div>}
               </div>
             )}
+            {/* Spin count row */}
+            <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-4 py-3 flex items-center justify-between">
+              <div>
+                <div className="text-yellow-300 text-xs font-medium mb-0.5">Free Spins</div>
+                {infoEp && <div className="text-yellow-400/30 text-[9px] font-mono">{infoEp}</div>}
+              </div>
+              <div className="text-white text-4xl font-bold">X{remainSpins}</div>
+            </div>
           </div>
         )}
 
@@ -1123,6 +1144,23 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
               ))}
             </div>
           </div>
+        )}
+
+        {/* Raw wheel info dump — helps identify actual spin-count field */}
+        {data && (
+          <details className="mb-4">
+            <summary className="text-white/30 text-[10px] cursor-pointer select-none px-1 py-0.5">
+              🔍 Raw GetInvitedWheelInfo fields (tap to expand)
+            </summary>
+            <div className="mt-1 bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto">
+              <pre className="text-[9px] text-white/50 whitespace-pre-wrap break-all">
+                {Object.entries(data)
+                  .filter(([, v]) => typeof v !== "object" || v === null)
+                  .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+                  .join("\n")}
+              </pre>
+            </div>
+          </details>
         )}
 
         {/* Result */}
