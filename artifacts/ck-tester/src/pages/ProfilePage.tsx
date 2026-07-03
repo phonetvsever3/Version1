@@ -784,6 +784,9 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
   const [spinResult, setSpinResult] = useState<{ ok: boolean; msg: string; data?: Record<string, unknown> } | null>(null);
   const [selectedBox, setSelectedBox] = useState<number | null>(null);
 
+  const [addingSpins, setAddingSpins] = useState(false);
+  const [addSpinResult, setAddSpinResult] = useState<{ ok: boolean; msg: string; data?: Record<string, unknown> } | null>(null);
+
   const INFO_ENDPOINTS = [
     "GetInvitedWheelInfo", "GetTurnTableInfo", "GetTurntableInfo", "GetWheelInfo",
     "GetLuckyWheelInfo", "GetTurnInfo", "TurnTableInfo", "GetTurnTableData",
@@ -906,6 +909,60 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
     setSpinning(false);
   }
 
+  async function doAddSpin() {
+    if (addingSpins) return;
+    setAddingSpins(true);
+    setAddSpinResult(null);
+
+    const auth = buildAuth(session);
+    const body = { count: 1, times: 1, num: 1, amount: 1 };
+
+    const isDeadEnd = (m: string) =>
+      m.includes("url is not exist") || m.includes("url not exist") || m.includes("not exist") ||
+      m.includes("unknown base") || m.includes("unknown_base") || m.includes("no route") ||
+      m.includes("not found");
+
+    const ADD_ENDPOINTS = [
+      "AddInvitedWheelCount", "AddInvitedWheelTimes", "GiveInvitedWheelSpin",
+      "AddWheelTimes", "AddWheelCount", "AddWheelSpin", "GiveWheelSpin",
+      "RechargeWheelTimes", "InvitedWheelAdd", "AddSpinCount", "AddSpinTimes",
+      "AddTurnTableCount", "AddTurnTableTimes", "GiveTurnTableSpin",
+      "AddLuckyDrawTimes", "AddActivitySpin",
+    ];
+
+    for (const base of SPIN_BASES) {
+      for (const ep of ADD_ENDPOINTS) {
+        try {
+          const res = await fetch(`/api/proxy/ck-path/${base}/${ep}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: auth,
+              "x-ck-token-header": (session.tokenHeader || "Bearer").trim(),
+              ...(session.cfClearance ? { "x-ck-cf-clearance": session.cfClearance } : {}),
+            },
+            body: JSON.stringify(body),
+          });
+          const text = await res.text();
+          let parsed: Record<string, unknown>;
+          try { parsed = JSON.parse(text) as Record<string, unknown>; } catch { continue; }
+          const msg = String(parsed.msg ?? parsed.message ?? "");
+          if (isDeadEnd(msg.toLowerCase())) continue;
+          const code = parsed.code ?? parsed.Code;
+          const ok = code === 0 || code === 200 || code === "0";
+          setAddSpinResult({ ok, msg: ok ? `✅ [${base}/${ep}] +1 spin added!` : `⚠️ [${base}/${ep}] ${msg}`, data: parsed });
+          if (ok) {
+            try { const fresh = await apiPost("GetInvitedWheelInfo", {}, session); setWheelInfo(fresh); } catch { /* ignore */ }
+          }
+          setAddingSpins(false);
+          return;
+        } catch { /* try next */ }
+      }
+    }
+    setAddSpinResult({ ok: false, msg: "❌ No add-spin endpoint found. This feature may require admin-level access." });
+    setAddingSpins(false);
+  }
+
   // Extract useful fields from wheel info
   const data = wheelInfo ? ((wheelInfo.data ?? wheelInfo) as Record<string, unknown>) : null;
 
@@ -960,7 +1017,7 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
 
         {/* Spin count banner */}
         {!infoLoading && !infoError && (
-          <div className="flex justify-center mb-6 gap-3">
+          <div className="flex justify-center mb-3 gap-3">
             <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-2xl px-5 py-3 text-center">
               <div className="text-yellow-300 text-xs mb-1 font-medium">Remaining Spins</div>
               <div className="text-white text-3xl font-bold">{remainSpins}</div>
@@ -972,6 +1029,39 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
                 <div className="text-orange-300 text-xs mb-1 font-medium">Total Prize</div>
                 <div className="text-white text-2xl font-bold">K{totalPrize.toLocaleString()}</div>
                 <div className="text-orange-400/50 text-[10px] mt-1">reward pool</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Add Spin button */}
+        {!infoLoading && (
+          <div className="mb-4">
+            <button
+              type="button"
+              onClick={() => void doAddSpin()}
+              disabled={addingSpins}
+              className={`w-full py-3 rounded-2xl font-bold text-sm shadow transition-all flex items-center justify-center gap-2 ${
+                addingSpins
+                  ? "bg-blue-500/30 text-white/40 cursor-not-allowed"
+                  : "bg-gradient-to-r from-blue-600 to-blue-400 text-white active:scale-95"
+              }`}
+            >
+              <span className="text-lg">➕</span>
+              {addingSpins ? "Scanning for add-spin endpoint…" : "+1 Spin"}
+            </button>
+            {addSpinResult && (
+              <div className={`rounded-xl px-3 py-2 mt-2 text-xs ${
+                addSpinResult.ok
+                  ? "bg-green-900/40 border border-green-500/40 text-green-300"
+                  : "bg-slate-800/60 border border-white/10 text-white/60"
+              }`}>
+                <div className="font-medium">{addSpinResult.msg}</div>
+                {addSpinResult.data && (
+                  <pre className="text-[9px] text-white/30 mt-1 overflow-x-auto whitespace-pre-wrap break-all max-h-20">
+                    {JSON.stringify(addSpinResult.data, null, 2)}
+                  </pre>
+                )}
               </div>
             )}
           </div>
