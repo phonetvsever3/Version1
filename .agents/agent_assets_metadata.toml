@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "qIG3jKKu33JC9gu8bKVrx"
+uri = "file://artifacts/ck-helper-extension.zip"
+type = "unspecified"
+title = "CK Helper Browser Extension"
