@@ -158,6 +158,7 @@ const CK_ALLOWED_BASES: Record<string, string> = {
   webapi:   "https://ckygjf6r.com/api/webapi",
   admin:    "https://ckygjf6r.com/api/admin",
   agent:    "https://ckygjf6r.com/api/agent",
+  opera:    "https://ckygjf6r.com/api/opera",    // server confirmed: webapi, admin, agent, opera
   operator: "https://ckygjf6r.com/api/operator",
   manage:   "https://ckygjf6r.com/api/manage",
   backend:  "https://ckygjf6r.com/api/backend",
