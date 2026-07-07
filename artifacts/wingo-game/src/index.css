@@ -1,0 +1,186 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --font-sans: var(--app-font-sans);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+:root {
+  --background: 220 20% 97%;
+  --foreground: 220 15% 10%;
+  --border: 220 13% 91%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 15% 10%;
+  --primary: 215 100% 50%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 14% 96%;
+  --secondary-foreground: 220 15% 10%;
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;
+  --accent: 220 14% 96%;
+  --accent-foreground: 220 15% 10%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 220 13% 91%;
+  --ring: 215 100% 50%;
+  --app-font-sans: 'Inter', sans-serif;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply font-sans antialiased bg-background text-foreground; }
+}
+
+.number-ball {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.1s;
+  border: 2px solid rgba(255,255,255,0.3);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  position: relative;
+  overflow: hidden;
+}
+
+.number-ball::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 8px;
+  width: 12px;
+  height: 6px;
+  background: rgba(255,255,255,0.4);
+  border-radius: 50%;
+}
+
+.number-ball:active { transform: scale(0.95); }
+
+.ball-0  { background: linear-gradient(145deg, #f44336, #c62828); }
+.ball-1  { background: linear-gradient(145deg, #43a047, #2e7d32); }
+.ball-2  { background: linear-gradient(145deg, #f44336, #c62828); }
+.ball-3  { background: linear-gradient(145deg, #43a047, #2e7d32); }
+.ball-4  { background: linear-gradient(145deg, #f44336, #c62828); }
+.ball-5  { background: linear-gradient(145deg, #43a047, #2e7d32); color: #fff; position: relative; }
+.ball-5::before { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: linear-gradient(145deg, #7b1fa2, #4a148c); opacity: 0.7; z-index: 0; }
+.ball-5 span { position: relative; z-index: 1; }
+.ball-6  { background: linear-gradient(145deg, #f44336, #c62828); }
+.ball-7  { background: linear-gradient(145deg, #43a047, #2e7d32); }
+.ball-8  { background: linear-gradient(145deg, #f44336, #c62828); }
+.ball-9  { background: linear-gradient(145deg, #43a047, #2e7d32); }
+.ball-0  { background: linear-gradient(145deg, #f44336, #c62828); position: relative; }
+.ball-0::before { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: linear-gradient(145deg, #7b1fa2, #4a148c); opacity: 0.7; z-index: 0; }
+.ball-0 span { position: relative; z-index: 1; }
+
+.color-dot-green { background: #4caf50; border-radius: 50%; }
+.color-dot-red { background: #f44336; border-radius: 50%; }
+.color-dot-violet { background: #9c27b0; border-radius: 50%; }
+
+.timer-digit {
+  background: #1a1a2e;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-width: 36px;
+  text-align: center;
+}
+
+.bet-btn-green {
+  background: linear-gradient(135deg, #4caf50, #2e7d32);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.bet-btn-violet {
+  background: linear-gradient(135deg, #9c27b0, #6a1b9a);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.bet-btn-red {
+  background: linear-gradient(135deg, #f44336, #b71c1c);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.bet-btn-big {
+  background: linear-gradient(135deg, #ff9800, #e65100);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.bet-btn-small {
+  background: linear-gradient(135deg, #2196f3, #0d47a1);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.selected-bet { outline: 3px solid #fff; outline-offset: 2px; opacity: 0.9; }
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(33, 150, 243, 0); }
+}
+
+.timer-pulse { animation: pulse-glow 1s infinite; }

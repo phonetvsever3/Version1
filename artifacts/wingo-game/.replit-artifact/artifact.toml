@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Win Go Game"
+version = "1.0.0"
+id = "artifacts/wingo-game"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24044
+
+[services.development]
+run = "pnpm --filter @workspace/wingo-game run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/wingo-game", "run", "build" ]
+publicDir = "artifacts/wingo-game/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24044"
+BASE_PATH = "/"
