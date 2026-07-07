@@ -253,7 +253,7 @@ export default function WinGoGame() {
         return;
       }
       const ep = HISTORY_EPS[i];
-      apiPost(ep, { typeId: activeType.id })
+      apiPost(ep, { typeId: activeType.id, pageNo: 1, pageSize: 20 })
         .then(d => {
           const list = extractList(d);
           const msg = String((d as Record<string, unknown>)?.msg ?? "");
@@ -399,27 +399,29 @@ export default function WinGoGame() {
       money: betAmt_,
       multiple: multiplier,
     };
-    for (const ep of BET_EPS) {
-      try {
-        const res = await apiPost(ep, betPayload);
-        const msg = String(res?.msg ?? res?.message ?? "");
-        const isNotExist = msg.toLowerCase().includes("url is not exist") || msg.toLowerCase().includes("not exist");
-        if (isNotExist) {
-          log(`${ep}: url not exist — trying next`);
-          continue;
+    try {
+      for (const ep of BET_EPS) {
+        try {
+          const res = await apiPost(ep, betPayload);
+          const msg = String(res?.msg ?? res?.message ?? "");
+          const isNotExist = msg.toLowerCase().includes("url is not exist") || msg.toLowerCase().includes("not exist");
+          if (isNotExist) {
+            log(`${ep}: url not exist — trying next`);
+            continue;
+          }
+          const ok = res?.code === 0 || res?.code === 200 || msg.toLowerCase().includes("success");
+          setBetMsg({ ok, text: msg || (ok ? "Bet placed!" : `code=${res?.code}`) });
+          if (ok) { setSelectedBet(null); setTimeout(() => { fetchBalance(); fetchMyBets(); }, 1200); }
+          log(`${ep}: code=${res?.code} msg=${msg}`);
+          return;
+        } catch (e) {
+          log(`${ep} ERR: ${String(e).slice(0, 60)}`);
         }
-        const ok = res?.code === 0 || res?.code === 200 || msg.toLowerCase().includes("success");
-        setBetMsg({ ok, text: msg || (ok ? "Bet placed!" : `code=${res?.code}`) });
-        if (ok) { setSelectedBet(null); setTimeout(() => { fetchBalance(); fetchMyBets(); }, 1200); }
-        log(`${ep}: code=${res?.code} msg=${msg}`);
-        return;
-      } catch (e) {
-        log(`${ep} ERR: ${String(e).slice(0, 60)}`);
       }
+      setBetMsg({ ok: false, text: "All bet endpoints failed — see API log" });
+    } finally {
+      setBetLoading(false);
     }
-    setBetMsg({ ok: false, text: "All bet endpoints failed — see API log" });
-    setBetLoading(false);
-    return;
   };
 
   // always called via placeBet wrapper that handles loading state
@@ -501,12 +503,21 @@ export default function WinGoGame() {
         {results.slice(0, 5).map((r, i) => {
           const { n, colorRaw } = parseWinGoRecord(r);
           const colors = colorRaw.toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+          const hasColor = (letter: string) => colors.some(c => c === letter || c.startsWith(letter));
+          const isGreen = hasColor("g");
+          const isViolet = hasColor("v");
+          const bg = (isGreen && !isViolet) ? "#4caf50"
+            : (isViolet && !isGreen) ? "#9c27b0"
+            : (isGreen && isViolet) ? "linear-gradient(135deg,#4caf50 50%,#9c27b0 50%)"
+            : isViolet ? "#9c27b0"
+            : n === 0 || n === 5 ? "linear-gradient(135deg,#f44336 50%,#9c27b0 50%)"
+            : "#f44336";
           return (
             <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 2, marginRight: 6, marginTop: 8 }}>
               {n !== null && <span style={{
                 width: 24, height: 24, borderRadius: "50%", fontWeight: 700, fontSize: 11,
                 display: "inline-flex", alignItems: "center", justifyContent: "center",
-                background: colors.includes("g") ? "#4caf50" : colors.includes("v") ? "#9c27b0" : "#f44336",
+                background: bg,
                 color: "#fff",
               }}>{n}</span>}
             </span>
@@ -528,11 +539,11 @@ export default function WinGoGame() {
                 key={b.value}
                 onClick={() => setSelectedBet(sel => sel?.value === b.value ? null : b)}
                 style={{
-                  flex: 1, padding: "12px 0", border: "none", borderRadius: 10,
+                  flex: 1, padding: "12px 0", borderRadius: 10,
+                  border: `2px solid ${selectedBet?.value === b.value ? b.color : "transparent"}`,
                   background: selectedBet?.value === b.value ? b.color : `${b.color}22`,
                   color: selectedBet?.value === b.value ? "#fff" : b.color,
                   fontWeight: 700, fontSize: 15, cursor: "pointer",
-                  border: `2px solid ${selectedBet?.value === b.value ? b.color : "transparent"}`,
                   transition: "all .15s",
                 }}
               >
