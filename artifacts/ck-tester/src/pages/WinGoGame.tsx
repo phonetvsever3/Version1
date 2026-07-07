@@ -191,6 +191,11 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 type BetSel = { type: string; value: string; label: string; color: string } | null;
 type Tab = "history" | "chart" | "myhistory";
 
+// Confirmed from API error: "Parameter 'BetCount' cannot be empty|Parameter 'Issuenumber' cannot be empty"
+const BET_EPS = ["BettingWingo", "WinGoBetting", "Betting", "WinBetting", "BetWingo", "GameBetting"];
+const HISTORY_EPS = ["GetNoaverageEmerdList", "GetNoverageEmerdList", "GetHistoryList",
+  "GetGameRecord", "GetRecordList", "WinGoRecord", "GetLotteryRecord", "GetGameList"];
+
 export default function WinGoGame() {
   const [loggedIn, setLoggedIn] = useState(() => !!getToken());
   const [typeIndex, setTypeIndex] = useState(0);
@@ -236,54 +241,78 @@ export default function WinGoGame() {
   }, []);
 
   // ── History ──
+  // GetEmerdList returns statistics (number_0..number_9 counts), NOT per-round history.
   const fetchResultsRef = useRef<() => void>(() => {});
   const fetchResults = useCallback(() => {
     setHistLoading(true);
-    // Match ProfilePage exactly — just typeId, no pagination params
-    apiPost("GetEmerdList", { typeId: activeType.id })
-      .then(d => {
-        const list = extractList(d);
-        if (list.length > 0) {
+    const tryEp = (i: number) => {
+      if (i >= HISTORY_EPS.length) {
+        setHistLoading(false);
+        log("All history endpoints exhausted");
+        return;
+      }
+      const ep = HISTORY_EPS[i];
+      apiPost(ep, { typeId: activeType.id })
+        .then(d => {
+          const list = extractList(d);
+          const msg = String((d as Record<string, unknown>)?.msg ?? "");
+          const isNotExist = msg.toLowerCase().includes("not exist") || msg.toLowerCase().includes("not found");
+          if (isNotExist || list.length === 0) {
+            log(`${ep}: ${isNotExist ? "not exist" : "empty"} — trying next`);
+            tryEp(i + 1);
+            return;
+          }
+          // Validate it's actually per-round history (should have issueNumber or period field)
+          const first = list[0] as Record<string, unknown>;
+          const hasPeriod = first.issueNumber ?? first.issueNum ?? first.period ?? first.issue ?? first.no;
+          if (!hasPeriod) {
+            log(`${ep}: ${list.length} records but no period field. Keys: ${Object.keys(first).join(",").slice(0, 80)} — trying next`);
+            tryEp(i + 1);
+            return;
+          }
           setResults(list);
-          const first = parseWinGoRecord(list[0]);
-          if (first.period !== "—") setPeriod(first.period);
-          // Log actual keys of first record so we can see CKLottery's real field names
-          log(`GetEmerdList OK — ${list.length} records. Keys: ${Object.keys(list[0]).join(",")}`);
-          log(`Record[0]: ${JSON.stringify(list[0]).slice(0, 200)}`);
-        } else {
-          log(`GetEmerdList empty — raw: ${JSON.stringify(d).slice(0, 200)}`);
-        }
-      })
-      .catch(e => log(`GetEmerdList ERR: ${e}`))
-      .finally(() => setHistLoading(false));
-  }, [activeType.id]);
+          const parsed = parseWinGoRecord(first);
+          if (parsed.period !== "—") setPeriod(parsed.period);
+          log(`${ep} OK — ${list.length} records. Keys: ${Object.keys(first).join(",").slice(0, 100)}`);
+        })
+        .catch(() => tryEp(i + 1))
+        .finally(() => { if (i === HISTORY_EPS.length - 1) setHistLoading(false); });
+    };
+    tryEp(0);
+  }, [activeType.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Current period / countdown ──
   const fetchPeriodRef = useRef<() => Promise<void>>(async () => {});
   const fetchPeriod = useCallback(async () => {
-    const eps = ["GetCurrentIssue", "GetGameInfo", "GetGameIssue", "GetCurrentPeriod"];
+    // GetGameIssue returns: issueNumber, startTime, endTime, serviceTime, intervalM
+    // Countdown = (endTime - serviceTime) / 1000 in seconds
+    const eps = ["GetGameIssue", "GetCurrentIssue", "GetGameInfo", "GetCurrentPeriod"];
     for (const ep of eps) {
       try {
         const d = await apiPost(ep, { typeId: activeType.id });
         const raw = (d?.data ?? d) as Record<string, unknown>;
         if (!raw) continue;
-        const p = String(
-          raw.issueNum ?? raw.issueNumber ?? raw.period ?? raw.issue ?? raw.no ?? ""
-        );
+        const p = String(raw.issueNumber ?? raw.issueNum ?? raw.period ?? raw.issue ?? raw.no ?? "");
         if (p) setPeriod(p);
-        const ct = Number(
-          raw.countDown ?? raw.countdown ?? raw.remainTime ?? raw.remainSeconds ??
-          raw.leftTime ?? raw.second ?? raw.time ?? 0
-        );
-        // Log full data keys on first call so we see the real field names
-        log(`${ep} — keys: ${Object.keys(raw).join(",")} | period: ${p} | ct: ${ct}`);
+
+        // Calculate countdown from endTime - serviceTime (milliseconds → seconds)
+        let ct = 0;
+        if (raw.endTime && raw.serviceTime) {
+          ct = Math.round((Number(raw.endTime) - Number(raw.serviceTime)) / 1000);
+        }
+        // Fallback: direct countdown fields
+        if (ct <= 0) {
+          ct = Number(raw.countDown ?? raw.countdown ?? raw.remainTime ?? raw.remainSeconds ??
+            raw.leftTime ?? raw.second ?? raw.time ?? 0);
+        }
+
+        log(`${ep} — period: ${p} | endTime: ${raw.endTime} | svcTime: ${raw.serviceTime} | ct: ${ct}`);
         if (ct > 0) { setTimeLeft(ct); return; }
         if (p) { setTimeLeft(localCountdown()); return; }
       } catch (e) {
         log(`${ep} ERR: ${String(e).slice(0, 80)}`);
       }
     }
-    // All failed or countdown=0 — use wall-clock estimate
     setTimeLeft(localCountdown());
   }, [activeType.id, localCountdown]);
 
@@ -347,14 +376,21 @@ export default function WinGoGame() {
     if (!selectedBet) return;
     setBetLoading(true);
     setBetMsg(null);
+    // API error revealed exact field names: "BetCount cannot be empty | Issuenumber cannot be empty"
+    const betAmt_ = Number(betAmt) || 10;
     const betPayload = {
       typeId: activeType.id,
+      // Both naming conventions — API will use whichever it knows
       number: selectedBet.value,
-      betAmount: Number(betAmt) || 10,
+      betKey: selectedBet.value,
+      Issuenumber: period,
+      issueNumber: period,
+      BetCount: betAmt_,
+      betAmount: betAmt_,
+      money: betAmt_,
       multiple: multiplier,
+      multilple: multiplier,
     };
-    // Try every known betting endpoint until one accepts (doesn't say "url not exist")
-    const BET_EPS = ["BettingWingo", "WinGoBetting", "Betting", "WinBetting", "BetWingo", "GameBetting"];
     for (const ep of BET_EPS) {
       try {
         const res = await apiPost(ep, betPayload);
