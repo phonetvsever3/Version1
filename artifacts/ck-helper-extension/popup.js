@@ -334,6 +334,102 @@ $('btnGetInfo').addEventListener('click', async () => {
   }
 });
 
+// ─── SCAN PAGE JS FOR ENDPOINTS ──────────────────────────────────────────────
+$('btnScanJs').addEventListener('click', async () => {
+  $('btnScanJs').disabled = true;
+  $('btnScanJs').textContent = '⏳ Scanning scripts…';
+  showResult('Fetching all JS files from the CKLottery page to find endpoint names…', 'result-info');
+  try {
+    const tab = await getCKTab();
+
+    // Step 1: collect all script src URLs from the page
+    const scriptUrls = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const urls = [];
+        document.querySelectorAll('script[src]').forEach(s => {
+          if (s.src) urls.push(s.src);
+        });
+        // also check webpack chunks in window.__webpack_require__ / performance entries
+        try {
+          const perf = performance.getEntriesByType('resource');
+          perf.forEach(e => {
+            if (e.initiatorType === 'script' && e.name) urls.push(e.name);
+          });
+        } catch {}
+        return [...new Set(urls)];
+      },
+    });
+    const urls = scriptUrls?.[0]?.result ?? [];
+
+    if (urls.length === 0) {
+      showResult('❌ No script tags found on this page. Make sure you are on cklottery.club and the page is fully loaded.', 'result-err');
+      return;
+    }
+
+    // Step 2: fetch each script from inside the tab (same origin, no CORS) and grep for endpoint strings
+    const scanResult = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async (scriptUrls) => {
+        const found = new Set();
+        // Patterns: strings that look like CKLottery API endpoint names
+        // e.g. "SpinInvitedWheel", "AddInvitedWheelCount", "GetUserInfo"
+        const EP_RE = /["'`]((?:Add|Give|Grant|Send|Receive|Claim|Get|Set|Update|Create|Submit|Do|Run|Start|Use|Redeem|Reward|Recharge|Transfer|Invite|Spin|Draw|Wheel|Lucky|Turn|Open|Apply|Manual)[A-Z][A-Za-z]{2,60})["'`]/g;
+
+        await Promise.all(scriptUrls.map(async url => {
+          try {
+            const r = await fetch(url);
+            const text = await r.text();
+            let m;
+            while ((m = EP_RE.exec(text)) !== null) found.add(m[1]);
+            EP_RE.lastIndex = 0;
+          } catch {}
+        }));
+
+        // Also scan inline scripts
+        document.querySelectorAll('script:not([src])').forEach(s => {
+          let m;
+          while ((m = EP_RE.exec(s.textContent)) !== null) found.add(m[1]);
+          EP_RE.lastIndex = 0;
+        });
+
+        return [...found].sort();
+      },
+      args: [urls],
+    });
+
+    const allEndpoints = scanResult?.[0]?.result ?? [];
+
+    if (allEndpoints.length === 0) {
+      showResult('⚠️ Scripts scanned but no endpoint names found. The site may use obfuscated names.', 'result-err');
+      return;
+    }
+
+    // Step 3: categorise — highlight anything spin/wheel/invite/draw/add related
+    const spinRelated = allEndpoints.filter(ep => {
+      const l = ep.toLowerCase();
+      return l.includes('spin') || l.includes('wheel') || l.includes('draw') || l.includes('invite') || l.includes('lucky') || l.includes('turn') || l.includes('chance') || l.includes('ticket') || l.includes('free');
+    });
+    const rest = allEndpoints.filter(ep => !spinRelated.includes(ep));
+
+    let html = `<b style="color:#34d399">✅ Found ${allEndpoints.length} endpoint names in ${urls.length} script file(s).</b><br><br>`;
+
+    if (spinRelated.length > 0) {
+      html += `<b style="color:#facc15">⭐ Spin/Wheel/Draw related (${spinRelated.length}):</b><br>`;
+      html += spinRelated.map(ep => `<code style="color:#86efac">${ep}</code>`).join(', ') + '<br><br>';
+    }
+    html += `<b style="color:#93c5fd">All others (${rest.length}):</b><br>`;
+    html += `<pre class="result-pre">${rest.join('\n')}</pre>`;
+
+    showResult(html, 'result-info');
+  } catch (e) {
+    showResult('❌ ' + e.message, 'result-err');
+  } finally {
+    $('btnScanJs').disabled = false;
+    $('btnScanJs').textContent = '🔎 Scan Page JS for Endpoints';
+  }
+});
+
 // ─── EXTRACT TAB ─────────────────────────────────────────────────────────────
 function setField(elId, copyId, value) {
   const el=$(elId), btn=$(copyId);
