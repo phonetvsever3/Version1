@@ -239,16 +239,19 @@ export default function WinGoGame() {
   const fetchResultsRef = useRef<() => void>(() => {});
   const fetchResults = useCallback(() => {
     setHistLoading(true);
-    apiPost("GetEmerdList", { typeId: activeType.id, pageNo: 1, pageSize: 20, language: 0 })
+    // Match ProfilePage exactly — just typeId, no pagination params
+    apiPost("GetEmerdList", { typeId: activeType.id })
       .then(d => {
         const list = extractList(d);
         if (list.length > 0) {
           setResults(list);
           const first = parseWinGoRecord(list[0]);
           if (first.period !== "—") setPeriod(first.period);
-          log(`GetEmerdList OK — ${list.length} records`);
+          // Log actual keys of first record so we can see CKLottery's real field names
+          log(`GetEmerdList OK — ${list.length} records. Keys: ${Object.keys(list[0]).join(",")}`);
+          log(`Record[0]: ${JSON.stringify(list[0]).slice(0, 200)}`);
         } else {
-          log(`GetEmerdList empty — raw: ${JSON.stringify(d).slice(0, 120)}`);
+          log(`GetEmerdList empty — raw: ${JSON.stringify(d).slice(0, 200)}`);
         }
       })
       .catch(e => log(`GetEmerdList ERR: ${e}`))
@@ -262,24 +265,25 @@ export default function WinGoGame() {
     for (const ep of eps) {
       try {
         const d = await apiPost(ep, { typeId: activeType.id });
-        const data = (d?.data ?? d) as Record<string, unknown>;
-        if (!data) continue;
+        const raw = (d?.data ?? d) as Record<string, unknown>;
+        if (!raw) continue;
         const p = String(
-          data.issueNum ?? data.issueNumber ?? data.period ?? data.issue ?? data.no ?? ""
+          raw.issueNum ?? raw.issueNumber ?? raw.period ?? raw.issue ?? raw.no ?? ""
         );
         if (p) setPeriod(p);
         const ct = Number(
-          data.countDown ?? data.countdown ?? data.remainTime ?? data.remainSeconds ??
-          data.leftTime ?? data.second ?? data.time ?? 0
+          raw.countDown ?? raw.countdown ?? raw.remainTime ?? raw.remainSeconds ??
+          raw.leftTime ?? raw.second ?? raw.time ?? 0
         );
-        log(`${ep} OK — period: ${p}, countdown: ${ct}`);
+        // Log full data keys on first call so we see the real field names
+        log(`${ep} — keys: ${Object.keys(raw).join(",")} | period: ${p} | ct: ${ct}`);
         if (ct > 0) { setTimeLeft(ct); return; }
         if (p) { setTimeLeft(localCountdown()); return; }
       } catch (e) {
-        log(`${ep} ERR: ${String(e).slice(0, 60)}`);
+        log(`${ep} ERR: ${String(e).slice(0, 80)}`);
       }
     }
-    // All failed — use wall-clock estimate
+    // All failed or countdown=0 — use wall-clock estimate
     setTimeLeft(localCountdown());
   }, [activeType.id, localCountdown]);
 
@@ -343,25 +347,38 @@ export default function WinGoGame() {
     if (!selectedBet) return;
     setBetLoading(true);
     setBetMsg(null);
-    try {
-      const res = await apiPost("BettingWingo", {
-        typeId: activeType.id,
-        number: selectedBet.value,
-        betAmount: Number(betAmt) || 10,
-        multiple: multiplier,
-      });
-      const ok = res?.code === 0 || res?.code === 200 || String(res?.msg ?? "").toLowerCase().includes("success");
-      setBetMsg({ ok, text: String(res?.msg ?? (ok ? "Bet placed!" : "Bet may have failed")) });
-      setSelectedBet(null);
-      if (ok) setTimeout(() => { fetchBalance(); fetchMyBets(); }, 1200);
-      log(`BettingWingo: code=${res?.code} msg=${res?.msg}`);
-    } catch (e) {
-      setBetMsg({ ok: false, text: String(e) });
-      log(`BettingWingo ERR: ${e}`);
-    } finally {
-      setBetLoading(false);
+    const betPayload = {
+      typeId: activeType.id,
+      number: selectedBet.value,
+      betAmount: Number(betAmt) || 10,
+      multiple: multiplier,
+    };
+    // Try every known betting endpoint until one accepts (doesn't say "url not exist")
+    const BET_EPS = ["BettingWingo", "WinGoBetting", "Betting", "WinBetting", "BetWingo", "GameBetting"];
+    for (const ep of BET_EPS) {
+      try {
+        const res = await apiPost(ep, betPayload);
+        const msg = String(res?.msg ?? res?.message ?? "");
+        const isNotExist = msg.toLowerCase().includes("url is not exist") || msg.toLowerCase().includes("not exist");
+        if (isNotExist) {
+          log(`${ep}: url not exist — trying next`);
+          continue;
+        }
+        const ok = res?.code === 0 || res?.code === 200 || msg.toLowerCase().includes("success");
+        setBetMsg({ ok, text: msg || (ok ? "Bet placed!" : `code=${res?.code}`) });
+        if (ok) { setSelectedBet(null); setTimeout(() => { fetchBalance(); fetchMyBets(); }, 1200); }
+        log(`${ep}: code=${res?.code} msg=${msg}`);
+        return;
+      } catch (e) {
+        log(`${ep} ERR: ${String(e).slice(0, 60)}`);
+      }
     }
+    setBetMsg({ ok: false, text: "All bet endpoints failed — see API log" });
+    setBetLoading(false);
+    return;
   };
+
+  // always called via placeBet wrapper that handles loading state
 
   if (!loggedIn) return <LoginScreen onLogin={() => setLoggedIn(true)} />;
 
