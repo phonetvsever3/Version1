@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { setToken, getToken, clearToken, getWinGoList, getWinGoCurrentIssue, placeBet, getUserInfo, type WinGoRecord } from "@/lib/ckApi";
 
+// Confirmed from live API: GetGameIssue intervalM values match these durations exactly
 const GAME_TYPES = [
-  { id: 1, label: "Win Go\n30s", seconds: 30 },
-  { id: 2, label: "Win Go\n1Min", seconds: 60 },
-  { id: 3, label: "Win Go\n3Min", seconds: 180 },
-  { id: 4, label: "Win Go\n5Min", seconds: 300 },
+  { id: 1, label: "Win Go\n1Min",  seconds: 60 },
+  { id: 2, label: "Win Go\n3Min",  seconds: 180 },
+  { id: 3, label: "Win Go\n5Min",  seconds: 300 },
+  { id: 4, label: "Win Go\n10Min", seconds: 600 },
 ];
 
 const MULTIPLIERS = ["X1", "X5", "X10", "X20", "X50", "X100"];

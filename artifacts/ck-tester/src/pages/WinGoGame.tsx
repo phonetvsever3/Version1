@@ -3,11 +3,12 @@ import { setToken, getToken, clearToken } from "@/lib/ckApi";
 
 const CK_API_BASE = "https://ckygjf6r.com/api/webapi";
 
+// Confirmed from live API: GetGameIssue intervalM values match these durations exactly
 const GAME_TYPES = [
-  { id: 1, label: "30s",  short: "30s",  duration: 30 },
-  { id: 2, label: "1Min", short: "1Min", duration: 60 },
-  { id: 3, label: "3Min", short: "3Min", duration: 180 },
-  { id: 4, label: "5Min", short: "5Min", duration: 300 },
+  { id: 1, label: "1Min",  short: "1Min",  duration: 60 },
+  { id: 2, label: "3Min",  short: "3Min",  duration: 180 },
+  { id: 3, label: "5Min",  short: "5Min",  duration: 300 },
+  { id: 4, label: "10Min", short: "10Min", duration: 600 },
 ];
 
 // ─── API helpers ────────────────────────────────────────────────────────────
@@ -322,16 +323,13 @@ export default function WinGoGame() {
   }, [activeType.id, localCountdown]);
 
   // ── My bets ──
+  // NOTE: Confirmed via live API testing — none of the standard bet-history endpoints
+  // (BetRecords, GetBettingRecord, GetUserBettingHistory, WingoBetRecord, MyBetList, etc.)
+  // exist on this CKLottery server. My History shows a static unavailable message.
   const fetchMyBets = useCallback(() => {
-    setMyBetsLoading(true);
-    const eps = ["BetRecords", "GetBettingRecord", "GetUserBettingHistory", "MyBetList", "WingoBetRecord"];
-    const tryNext = (i: number) => {
-      if (i >= eps.length) { setMyBetsLoading(false); return; }
-      apiPost(eps[i], { typeId: activeType.id, pageNo: 1, pageSize: 20 })
-        .then(d => { setMyBets(extractList(d)); setMyBetsLoading(false); log(`${eps[i]} OK`); })
-        .catch(() => tryNext(i + 1));
-    };
-    tryNext(0);
+    setMyBetsLoading(false);
+    setMyBets([]);
+    log("My History: no bet-record endpoint available on this server");
   }, [activeType.id]);
 
   // ── Timer ──
@@ -731,7 +729,11 @@ export default function WinGoGame() {
             {myBetsLoading ? (
               <div style={{ padding: 20, textAlign: "center", color: "#999" }}>Loading...</div>
             ) : myBets.length === 0 ? (
-              <div style={{ padding: 20, textAlign: "center", color: "#999" }}>No bet history</div>
+              <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>📋</div>
+                <div>Bet history is not available on this server.</div>
+                <div style={{ fontSize: 11, marginTop: 4, color: "#ccc" }}>Place a bet to see results here once the round ends.</div>
+              </div>
             ) : myBets.slice(0, 20).map((b, i) => {
               const issueNum = String(b.issueNumber ?? b.issue ?? b.period ?? b.no ?? "—");
               const betVal = String(b.number ?? b.betKey ?? b.betContent ?? b.betVal ?? b.content ?? "—");
