@@ -133,10 +133,28 @@ async function callCKApi(tabId, endpoint, extraBody = {}) {
 // ─── SPIN button ────────────────────────────────────────────────────────────
 $('btnSpin').addEventListener('click', async () => {
   $('btnSpin').disabled = true;
-  $('btnSpin').textContent = '⏳ Spinning…';
-  showResult('Calling SpinInvitedWheel with signed body…', 'result-info');
+  $('btnSpin').textContent = '⏳ Checking spins…';
+  showResult('Checking available spins before calling SpinInvitedWheel…', 'result-info');
   try {
     const tab = await getCKTab();
+
+    // Pre-check: get wheel info first so we know spin count
+    const infoResult = await callCKApi(tab.id, 'GetInvitedWheelInfo', {});
+    if (infoResult.ok && infoResult.data?.data != null) {
+      const info = infoResult.data.data;
+      const spins = info['invitedWheelAmountofcodeAmount'] ?? info['spinCount'] ?? info['drawCount'];
+      if (spins != null && Number(spins) === 0) {
+        showResult(
+          '⚠️ <b>No free spins available (spins = 0).</b><br>' +
+          'Use <b>Add 1 Spin</b> to get more, or invite friends.<br>' +
+          '<pre class="result-pre">' + JSON.stringify(info, null, 2) + '</pre>',
+          'result-err'
+        );
+        return;
+      }
+    }
+
+    $('btnSpin').textContent = '⏳ Spinning…';
     const result = await callCKApi(tab.id, 'SpinInvitedWheel', {});
     if (!result.ok) {
       showResult('❌ Injection error: ' + result.error, 'result-err');
@@ -144,9 +162,17 @@ $('btnSpin').addEventListener('click', async () => {
       const d = result.data;
       const code = d.code ?? d.Code;
       const msg = d.msg || d.message || '';
+      const msgCode = d.msgCode;
       const ok = code === 0 || code === 200 || code === '0';
+      // msgCode 1019 = "No available draws" — give a friendly message
+      const noDraws = msgCode === 1019 || (msg && msg.toLowerCase().includes('no available draw'));
       showResult(
-        (ok ? '✅ Spin success!' : '⚠️ code=' + code) + ' ' + msg +
+        (ok
+          ? '✅ Spin success!'
+          : noDraws
+            ? '⚠️ No available draws — you have no free spins left. Try <b>Add 1 Spin</b>.'
+            : '⚠️ code=' + code) +
+        ((!noDraws && msg) ? ' ' + msg : '') +
         '<pre class="result-pre">' + JSON.stringify(d, null, 2) + '</pre>',
         ok ? 'result-ok' : 'result-err'
       );
@@ -163,36 +189,105 @@ $('btnSpin').addEventListener('click', async () => {
 $('btnAddSpin').addEventListener('click', async () => {
   $('btnAddSpin').disabled = true;
   $('btnAddSpin').textContent = '⏳ Scanning…';
-  showResult('Scanning add-spin endpoints with correct signature…', 'result-info');
+  showResult('Scanning add-spin endpoints… (this may take a few seconds)', 'result-info');
 
+  // Expanded list — covers more naming variants used by CKLottery forks
   const ADD_ENDPOINTS = [
-    'AddInvitedWheelCount','AddInvitedWheelTimes','GiveInvitedWheelSpin',
-    'AddWheelTimes','AddWheelCount','AddWheelSpin','GiveWheelSpin',
-    'RechargeWheelTimes','InvitedWheelAdd','AddSpinCount','AddSpinTimes',
-    'AddTurnTableCount','AddTurnTableTimes','AddLuckyDrawTimes',
+    // InvitedWheel-specific (most likely)
+    'AddInvitedWheelCount','AddInvitedWheelTimes','AddInvitedWheelNum',
+    'GiveInvitedWheelSpin','GiveInvitedWheelCount','GiveInvitedWheelTimes',
+    'InvitedWheelAdd','InvitedWheelAddCount','InvitedWheelAddTimes',
+    'SendInvitedWheelSpin','GrantInvitedWheelSpin','RechargeInvitedWheelTimes',
+    // Generic wheel
+    'AddWheelTimes','AddWheelCount','AddWheelSpin','AddWheelNum',
+    'GiveWheelSpin','GiveWheelTimes','GiveWheelCount',
+    'RechargeWheelTimes','RechargeWheelCount',
+    'SendWheelSpin','GrantWheelSpin','GrantWheelCount',
+    // Spin / draw
+    'AddSpinCount','AddSpinTimes','AddSpinNum','GiveSpinCount','GiveSpinTimes',
+    'AddDrawCount','AddDrawTimes','AddDrawNum','GiveDrawCount',
+    // TurnTable / LuckyDraw
+    'AddTurnTableCount','AddTurnTableTimes','AddLuckyDrawTimes','AddLuckyDrawCount',
+    'GiveTurnTableSpin','GiveLuckyDrawSpin',
+    // Ticket / chance
+    'AddChance','AddTicket','AddFreePlay','AddFreeChance','AddFreeSpin',
   ];
+
+  // Only filter messages that mean the URL literally doesn't exist on the server.
+  // Do NOT filter auth/permission errors — those prove the endpoint IS there.
+  function isNotExist(msg) {
+    const m = msg.toLowerCase();
+    return (
+      m.includes('url is not exist') ||
+      m.includes('url not exist') ||
+      m.includes('no route') ||
+      m.includes('invalid url') ||
+      m.includes('no such route') ||
+      (m.includes('not exist') && !m.includes('draw') && !m.includes('spin') && !m.includes('permission') && !m.includes('auth'))
+    );
+  }
 
   try {
     const tab = await getCKTab();
-    let found = false;
+    let successEp = null;
+    const permissionDenied = [];
+    const errors = [];
+
     for (const ep of ADD_ENDPOINTS) {
       const result = await callCKApi(tab.id, ep, { count: 1, times: 1, num: 1 });
       if (!result.ok) continue;
       const d = result.data;
       const msg = String(d.msg ?? d.message ?? '');
-      const ml = msg.toLowerCase();
-      if (ml.includes('not exist') || ml.includes('no route') || ml.includes('not found')) continue;
       const code = d.code ?? d.Code;
       const ok = code === 0 || code === 200 || code === '0';
-      showResult(
-        (ok ? '✅ +1 Spin added!' : '⚠️ [' + ep + ']') + ' ' + msg +
-        '<pre class="result-pre">' + JSON.stringify(d, null, 2) + '</pre>',
-        ok ? 'result-ok' : 'result-err'
-      );
-      found = true;
-      break;
+
+      // Skip truly non-existent endpoints
+      if (isNotExist(msg)) continue;
+
+      if (ok) {
+        successEp = { ep, d, msg };
+        break;
+      }
+
+      // Endpoint EXISTS but returned an error — track it
+      const ml = msg.toLowerCase();
+      const isAuth = ml.includes('permission') || ml.includes('auth') ||
+        ml.includes('privilege') || ml.includes('admin') || ml.includes('agent') ||
+        ml.includes('forbidden') || ml.includes('unauthorized') || ml.includes('access');
+      if (isAuth) {
+        permissionDenied.push({ ep, msg });
+      } else {
+        errors.push({ ep, code, msg });
+      }
     }
-    if (!found) showResult('❌ No add-spin endpoint found. Server requires admin/agent privileges.', 'result-err');
+
+    if (successEp) {
+      showResult(
+        '✅ +1 Spin added via <b>' + successEp.ep + '</b>! ' + successEp.msg +
+        '<pre class="result-pre">' + JSON.stringify(successEp.d, null, 2) + '</pre>',
+        'result-ok'
+      );
+    } else if (permissionDenied.length > 0) {
+      const list = permissionDenied.map(x => `<b>${x.ep}</b>: ${x.msg}`).join('<br>');
+      showResult(
+        '🔒 <b>' + permissionDenied.length + ' endpoint(s) found but require admin/agent token:</b><br>' + list +
+        '<br><br><small>These endpoints exist on the server but your user token lacks the required privilege level.</small>',
+        'result-err'
+      );
+    } else if (errors.length > 0) {
+      const list = errors.map(x => `<b>${x.ep}</b> (code ${x.code}): ${x.msg}`).join('<br>');
+      showResult(
+        '⚠️ <b>' + errors.length + ' endpoint(s) found but returned errors:</b><br>' + list,
+        'result-err'
+      );
+    } else {
+      showResult(
+        '❌ No add-spin endpoint found on this server.<br>' +
+        '<small>All ' + ADD_ENDPOINTS.length + ' candidates returned "url not exist". ' +
+        'This server may not expose an add-spin API for regular users.</small>',
+        'result-err'
+      );
+    }
   } catch (e) {
     showResult('❌ ' + e.message, 'result-err');
   } finally {
