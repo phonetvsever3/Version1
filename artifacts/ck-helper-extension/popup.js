@@ -138,15 +138,20 @@ $('btnSpin').addEventListener('click', async () => {
   try {
     const tab = await getCKTab();
 
-    // Pre-check: get wheel info first so we know spin count
+    // Pre-check: get wheel info to look for a reliable spin-count field
+    // NOTE: invitedWheelAmountofcodeAmount = number of qualifying invite codes, NOT spin count
     const infoResult = await callCKApi(tab.id, 'GetInvitedWheelInfo', {});
     if (infoResult.ok && infoResult.data?.data != null) {
       const info = infoResult.data.data;
-      const spins = info['invitedWheelAmountofcodeAmount'] ?? info['spinCount'] ?? info['drawCount'];
+      // Only use fields that actually represent remaining draws
+      const spins =
+        info['remainCount'] ?? info['remainDrawCount'] ?? info['availableCount'] ??
+        info['spinCount'] ?? info['drawCount'] ?? info['freeCount'] ??
+        info['leftCount'] ?? info['surplusCount'] ?? info['residueCount'];
       if (spins != null && Number(spins) === 0) {
         showResult(
-          '⚠️ <b>No free spins available (spins = 0).</b><br>' +
-          'Use <b>Add 1 Spin</b> to get more, or invite friends.<br>' +
+          '⚠️ <b>No free spins available (remaining = 0).</b><br>' +
+          'Invite a friend to deposit to earn more spins.<br>' +
           '<pre class="result-pre">' + JSON.stringify(info, null, 2) + '</pre>',
           'result-err'
         );
@@ -312,11 +317,19 @@ $('btnGetInfo').addEventListener('click', async () => {
     } else {
       const raw = result.data;
       const d = raw?.data ?? raw;
-      const spins = d['invitedWheelAmountofcodeAmount'];
+      // Reliable remaining-spin fields (invitedWheelAmountofcodeAmount = invite codes used, NOT spin count)
+      const spinCount =
+        d['remainCount'] ?? d['remainDrawCount'] ?? d['availableCount'] ??
+        d['spinCount'] ?? d['drawCount'] ?? d['freeCount'] ??
+        d['leftCount'] ?? d['surplusCount'] ?? d['residueCount'];
+      const inviteCodes = d['invitedWheelAmountofcodeAmount'];
       const accum = d['userInvitedWheelAmount'];
       const total = d['invitedWheelTotalPrizeAmount'];
       const summary = [
-        spins != null ? `🎰 Free Spins: <b style="color:#facc15;font-size:14px">${spins}</b>` : '',
+        spinCount != null
+          ? `🎰 Remaining Spins: <b style="color:#facc15;font-size:14px">${spinCount}</b>`
+          : `🎰 Remaining Spins: <b style="color:#888;font-size:12px">unknown (field not found)</b>`,
+        inviteCodes != null ? `👥 Invite Codes Used: ${inviteCodes}` : '',
         accum != null ? `💰 My Amount: K${Number(accum).toLocaleString()}` : '',
         total != null ? `🏆 Total Prize: K${Number(total).toLocaleString()}` : '',
       ].filter(Boolean).join('<br>');
