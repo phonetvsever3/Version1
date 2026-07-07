@@ -381,23 +381,61 @@ $('btnGetRules').addEventListener('click', async () => {
 });
 
 // ─── NETWORK SPY ─────────────────────────────────────────────────────────────
-// Patches fetch() inside the CKLottery tab to record all /api/webapi/ calls.
-// User clicks Start, does actions on the page (navigate, tap buttons, etc.),
-// then clicks Stop to see every endpoint that fired.
-let spyActive = false;
+// Patches fetch() + XHR inside the CKLottery tab to record ALL /api/ calls.
+// The patch lives in the PAGE context — it survives popup close/reopen.
+// On popup open we check if spy is already running and restore button state.
+
+function setSpyButtons(active) {
+  if (active) {
+    $('btnSpyStart').textContent = '👁️ Spy Active…';
+    $('btnSpyStart').style.opacity = '0.5';
+    $('btnSpyStart').disabled = true;
+    $('btnSpyStop').disabled = false;
+    $('btnSpyStop').style.background = 'linear-gradient(135deg,#dc2626,#f87171)';
+    $('btnSpyStop').style.color = '#fff';
+    $('btnSpyStop').textContent = '⏹ Stop & Show Captured Calls';
+  } else {
+    $('btnSpyStart').textContent = '👁️ Start Network Spy';
+    $('btnSpyStart').style.opacity = '1';
+    $('btnSpyStart').disabled = false;
+    $('btnSpyStop').disabled = true;
+    $('btnSpyStop').style.background = '#1a1a1a';
+    $('btnSpyStop').style.color = '#888';
+  }
+}
+
+async function checkSpyStatus() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    if (!tab?.id) return;
+    const r = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => Array.isArray(window.__ckSpy) ? window.__ckSpy.length : -1,
+    });
+    const count = r?.[0]?.result ?? -1;
+    if (count >= 0) {
+      setSpyButtons(true);
+      $('tabStatus').className = 'result-box result-ok';
+      const prev = $('tabStatus').textContent;
+      if (!prev.includes('Spy')) {
+        $('tabStatus').textContent = (prev || '') + ' | 👁️ Spy running (' + count + ' calls)';
+      }
+    }
+  } catch {}
+}
 
 $('btnSpyStart').addEventListener('click', async () => {
   try {
     const tab = await getCKTab();
-    // Inject the spy patch into the page
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
-        if (window.__ckSpy) return; // already active
+        if (Array.isArray(window.__ckSpy)) return; // already active
         window.__ckSpy = [];
         const origFetch = window.fetch.bind(window);
         window.fetch = async function(input, init) {
-          const url = typeof input === 'string' ? input : input?.url ?? '';
+          const url = typeof input === 'string' ? input : (input?.url ?? '');
           const match = url.match(/\/api\/(?:webapi|admin|agent|operator|manage|backend)\/([^?#/]+)/);
           if (match) {
             let body = null;
@@ -406,22 +444,22 @@ $('btnSpyStart').addEventListener('click', async () => {
           }
           return origFetch(input, init);
         };
-        // Also patch XMLHttpRequest
         const origOpen = XMLHttpRequest.prototype.open;
         XMLHttpRequest.prototype.open = function(method, url) {
-          const match = url.match(/\/api\/(?:webapi|admin|agent|operator|manage|backend)\/([^?#/]+)/);
-          if (match) window.__ckSpy.push({ ep: match[1], url, body: null, ts: new Date().toISOString() });
+          const match = String(url).match(/\/api\/(?:webapi|admin|agent|operator|manage|backend)\/([^?#/]+)/);
+          if (match) window.__ckSpy.push({ ep: match[1], url: String(url), body: null, ts: new Date().toISOString() });
           return origOpen.apply(this, arguments);
         };
       },
     });
-    spyActive = true;
-    $('btnSpyStart').textContent = '👁️ Spy Active…';
-    $('btnSpyStart').style.opacity = '0.5';
-    $('btnSpyStop').disabled = false;
-    $('btnSpyStop').style.background = 'linear-gradient(135deg,#dc2626,#f87171)';
-    $('btnSpyStop').style.color = '#fff';
-    showResult('👁️ <b>Network Spy is ON.</b><br>Now use the CKLottery page normally — tap the wheel, invite buttons, etc. Then come back here and click <b>Stop</b>.', 'result-info');
+    setSpyButtons(true);
+    showResult(
+      '👁️ <b>Network Spy is ON — it stays active even when you close this popup.</b><br><br>' +
+      'Now go use the CKLottery page normally:<br>' +
+      '• Open the Invite Wheel<br>• Tap Deposit / Withdraw / Bonus / Invite<br>• Navigate between pages<br><br>' +
+      'Then reopen this extension and click <b>⏹ Stop & Show Captured Calls</b>.',
+      'result-info'
+    );
   } catch (e) {
     showResult('❌ ' + e.message, 'result-err');
   }
@@ -429,50 +467,60 @@ $('btnSpyStart').addEventListener('click', async () => {
 
 $('btnSpyStop').addEventListener('click', async () => {
   try {
-    const tab = await getCKTab();
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    if (!tab?.id) throw new Error('No active tab');
     const r = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
         const calls = window.__ckSpy ?? [];
-        window.__ckSpy = null;
-        // Restore original fetch (page reload will also restore it)
+        window.__ckSpy = null; // stop spy
         return calls;
       },
     });
     const calls = r?.[0]?.result ?? [];
-    spyActive = false;
-    $('btnSpyStart').textContent = '👁️ Start Network Spy';
-    $('btnSpyStart').style.opacity = '1';
-    $('btnSpyStop').disabled = true;
-    $('btnSpyStop').style.background = '#1a1a1a';
-    $('btnSpyStop').style.color = '#888';
+    setSpyButtons(false);
 
     if (calls.length === 0) {
-      showResult('⚠️ Spy stopped but no API calls were captured. Try using the wheel page while the spy is active.', 'result-err');
+      showResult('⚠️ Spy stopped but 0 calls captured. Use the CK page while spy is running, then stop.', 'result-err');
       return;
     }
 
-    // Deduplicate and sort
+    // Deduplicate (keep first occurrence of each endpoint)
     const seen = new Map();
     calls.forEach(c => { if (!seen.has(c.ep)) seen.set(c.ep, c); });
     const unique = [...seen.values()];
 
-    const spinRelated = unique.filter(c => {
-      const l = c.ep.toLowerCase();
-      return l.includes('spin') || l.includes('wheel') || l.includes('draw') || l.includes('invite') || l.includes('lucky') || l.includes('turn') || l.includes('add') || l.includes('give') || l.includes('grant') || l.includes('receive') || l.includes('reward');
-    });
-    const other = unique.filter(c => !spinRelated.includes(c));
-
-    let html = `<b style="color:#c084fc">🕵️ Captured ${calls.length} calls (${unique.length} unique endpoints):</b><br><br>`;
-    if (spinRelated.length > 0) {
-      html += `<b style="color:#fbbf24">⭐ Spin/Wheel/Reward related (${spinRelated.length}):</b><br>`;
-      spinRelated.forEach(c => {
-        html += `<code style="color:#86efac">${c.ep}</code><br>`;
-      });
-      html += '<br>';
+    // Categorise all endpoints
+    function cat(ep) {
+      const l = ep.toLowerCase();
+      if (l.includes('deposit') || l.includes('recharge') || l.includes('topup') || l.includes('pay')) return '💳 Deposit';
+      if (l.includes('withdraw') || l.includes('cashout') || l.includes('payout')) return '💸 Withdrawal';
+      if (l.includes('bonus') || l.includes('reward') || l.includes('gift') || l.includes('redeem') || l.includes('coupon') || l.includes('voucher')) return '🎁 Bonus/Reward';
+      if (l.includes('spin') || l.includes('wheel') || l.includes('draw') || l.includes('lucky') || l.includes('lottery') || l.includes('turntable')) return '🎰 Wheel/Lottery';
+      if (l.includes('invite') || l.includes('referral') || l.includes('agent') || l.includes('team') || l.includes('commission')) return '👥 Invite/Agent';
+      if (l.includes('user') || l.includes('profile') || l.includes('login') || l.includes('register') || l.includes('auth') || l.includes('token')) return '👤 User/Auth';
+      if (l.includes('wallet') || l.includes('balance') || l.includes('fund') || l.includes('transfer')) return '💰 Wallet';
+      if (l.includes('vip') || l.includes('level') || l.includes('grade') || l.includes('rank')) return '⭐ VIP';
+      if (l.includes('bet') || l.includes('game') || l.includes('play') || l.includes('order') || l.includes('record')) return '🎮 Game/Bet';
+      if (l.includes('get') || l.includes('query') || l.includes('list') || l.includes('info') || l.includes('detail')) return '📋 Query/Info';
+      return '🔧 Other';
     }
-    html += `<b style="color:#93c5fd">All captured (${unique.length}):</b><br>`;
-    html += `<pre class="result-pre" style="max-height:140px">${unique.map(c => c.ep).join('\n')}</pre>`;
+
+    const groups = {};
+    unique.forEach(c => {
+      const g = cat(c.ep);
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(c.ep);
+    });
+
+    let html = `<b style="color:#c084fc">🕵️ Spy captured ${calls.length} calls → ${unique.length} unique endpoints:</b><br><br>`;
+    const order = ['🎰 Wheel/Lottery','💳 Deposit','💸 Withdrawal','🎁 Bonus/Reward','👥 Invite/Agent','💰 Wallet','⭐ VIP','🎮 Game/Bet','👤 User/Auth','📋 Query/Info','🔧 Other'];
+    order.forEach(g => {
+      if (!groups[g]) return;
+      html += `<b style="color:#fbbf24">${g} (${groups[g].length}):</b><br>`;
+      html += groups[g].map(ep => `<code style="color:#86efac">${ep}</code>`).join(', ') + '<br><br>';
+    });
     showResult(html, 'result-info');
   } catch (e) {
     showResult('❌ ' + e.message, 'result-err');
@@ -695,4 +743,5 @@ $('btnScan').addEventListener('click', async () => {
 
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => $('btnScan').click(), 80);
+  setTimeout(() => checkSpyStatus(), 300);
 });
