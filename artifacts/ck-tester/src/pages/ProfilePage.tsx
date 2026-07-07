@@ -966,10 +966,14 @@ function LuckyWheelPage({ session, onBack }: { session: UserSession; onBack: () 
   // Extract useful fields from wheel info
   const data = wheelInfo ? ((wheelInfo.data ?? wheelInfo) as Record<string, unknown>) : null;
 
-  // NOTE: userInvitedWheelAmount = accumulated prize money (K8,936), NOT spin count
-  // NOTE: userInvitedWheelCount  = total invited count, NOT spin count
-  // Actual spin count fields (to be confirmed from raw data dump below):
+  // CONFIRMED field from GetInvitedWheelInfo: invitedWheelAmountofcodeAmount = spin count
+  // NOTE: userInvitedWheelAmount = accumulated prize money, NOT spin count
+  // NOTE: userInvitedWheelCount  = total invited persons count, NOT spin count
   const remainSpins = data ? (() => {
+    // Confirmed field first
+    const confirmed = data["invitedWheelAmountofcodeAmount"];
+    if (confirmed !== undefined && confirmed !== null) return Number(confirmed);
+    // Fallback candidates
     const candidates = [
       "remainTimes","remainCount","times","spinCount","remainSpins","leftTimes","leftCount",
       "wheelTimes","spinTimes","invitedWheelTimes","remainWheelCount","remainWheelTimes",

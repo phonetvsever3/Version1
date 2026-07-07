@@ -214,11 +214,22 @@ $('btnGetInfo').addEventListener('click', async () => {
     } else {
       const raw = result.data;
       const d = raw?.data ?? raw;
+      const spins = d['invitedWheelAmountofcodeAmount'];
+      const accum = d['userInvitedWheelAmount'];
+      const total = d['invitedWheelTotalPrizeAmount'];
+      const summary = [
+        spins != null ? `🎰 Free Spins: <b style="color:#facc15;font-size:14px">${spins}</b>` : '',
+        accum != null ? `💰 My Amount: K${Number(accum).toLocaleString()}` : '',
+        total != null ? `🏆 Total Prize: K${Number(total).toLocaleString()}` : '',
+      ].filter(Boolean).join('<br>');
       const fields = Object.entries(d)
         .filter(([,v]) => typeof v !== 'object' || v === null)
         .map(([k,v]) => k + ': ' + JSON.stringify(v))
         .join('\n');
-      showResult('📊 Wheel Info<pre class="result-pre">' + fields + '</pre>', 'result-info');
+      showResult(
+        summary + '<pre class="result-pre">' + fields + '</pre>',
+        'result-info'
+      );
     }
   } catch (e) {
     showResult('❌ ' + e.message, 'result-err');
