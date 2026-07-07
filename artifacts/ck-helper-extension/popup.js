@@ -350,6 +350,135 @@ $('btnGetInfo').addEventListener('click', async () => {
   }
 });
 
+// ─── GET WHEEL RULES ─────────────────────────────────────────────────────────
+$('btnGetRules').addEventListener('click', async () => {
+  $('btnGetRules').disabled = true;
+  $('btnGetRules').textContent = '⏳ Loading…';
+  showResult('Calling GetInvitedWheelRules…', 'result-info');
+  try {
+    const tab = await getCKTab();
+    const result = await callCKApi(tab.id, 'GetInvitedWheelRules', {});
+    if (!result.ok) {
+      showResult('❌ ' + result.error, 'result-err');
+    } else {
+      const raw = result.data;
+      const code = raw.code ?? raw.Code;
+      const ok = code === 0 || code === 200 || code === '0';
+      const d = raw?.data ?? raw;
+      const text = typeof d === 'string' ? d : JSON.stringify(d, null, 2);
+      showResult(
+        (ok ? '📋 <b>Wheel Rules:</b>' : '⚠️ code=' + code) +
+        '<pre class="result-pre" style="max-height:160px">' + text + '</pre>',
+        ok ? 'result-info' : 'result-err'
+      );
+    }
+  } catch (e) {
+    showResult('❌ ' + e.message, 'result-err');
+  } finally {
+    $('btnGetRules').disabled = false;
+    $('btnGetRules').textContent = '📋 Get Wheel Rules';
+  }
+});
+
+// ─── NETWORK SPY ─────────────────────────────────────────────────────────────
+// Patches fetch() inside the CKLottery tab to record all /api/webapi/ calls.
+// User clicks Start, does actions on the page (navigate, tap buttons, etc.),
+// then clicks Stop to see every endpoint that fired.
+let spyActive = false;
+
+$('btnSpyStart').addEventListener('click', async () => {
+  try {
+    const tab = await getCKTab();
+    // Inject the spy patch into the page
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        if (window.__ckSpy) return; // already active
+        window.__ckSpy = [];
+        const origFetch = window.fetch.bind(window);
+        window.fetch = async function(input, init) {
+          const url = typeof input === 'string' ? input : input?.url ?? '';
+          const match = url.match(/\/api\/(?:webapi|admin|agent|operator|manage|backend)\/([^?#/]+)/);
+          if (match) {
+            let body = null;
+            try { body = JSON.parse(init?.body); } catch {}
+            window.__ckSpy.push({ ep: match[1], url, body, ts: new Date().toISOString() });
+          }
+          return origFetch(input, init);
+        };
+        // Also patch XMLHttpRequest
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+          const match = url.match(/\/api\/(?:webapi|admin|agent|operator|manage|backend)\/([^?#/]+)/);
+          if (match) window.__ckSpy.push({ ep: match[1], url, body: null, ts: new Date().toISOString() });
+          return origOpen.apply(this, arguments);
+        };
+      },
+    });
+    spyActive = true;
+    $('btnSpyStart').textContent = '👁️ Spy Active…';
+    $('btnSpyStart').style.opacity = '0.5';
+    $('btnSpyStop').disabled = false;
+    $('btnSpyStop').style.background = 'linear-gradient(135deg,#dc2626,#f87171)';
+    $('btnSpyStop').style.color = '#fff';
+    showResult('👁️ <b>Network Spy is ON.</b><br>Now use the CKLottery page normally — tap the wheel, invite buttons, etc. Then come back here and click <b>Stop</b>.', 'result-info');
+  } catch (e) {
+    showResult('❌ ' + e.message, 'result-err');
+  }
+});
+
+$('btnSpyStop').addEventListener('click', async () => {
+  try {
+    const tab = await getCKTab();
+    const r = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const calls = window.__ckSpy ?? [];
+        window.__ckSpy = null;
+        // Restore original fetch (page reload will also restore it)
+        return calls;
+      },
+    });
+    const calls = r?.[0]?.result ?? [];
+    spyActive = false;
+    $('btnSpyStart').textContent = '👁️ Start Network Spy';
+    $('btnSpyStart').style.opacity = '1';
+    $('btnSpyStop').disabled = true;
+    $('btnSpyStop').style.background = '#1a1a1a';
+    $('btnSpyStop').style.color = '#888';
+
+    if (calls.length === 0) {
+      showResult('⚠️ Spy stopped but no API calls were captured. Try using the wheel page while the spy is active.', 'result-err');
+      return;
+    }
+
+    // Deduplicate and sort
+    const seen = new Map();
+    calls.forEach(c => { if (!seen.has(c.ep)) seen.set(c.ep, c); });
+    const unique = [...seen.values()];
+
+    const spinRelated = unique.filter(c => {
+      const l = c.ep.toLowerCase();
+      return l.includes('spin') || l.includes('wheel') || l.includes('draw') || l.includes('invite') || l.includes('lucky') || l.includes('turn') || l.includes('add') || l.includes('give') || l.includes('grant') || l.includes('receive') || l.includes('reward');
+    });
+    const other = unique.filter(c => !spinRelated.includes(c));
+
+    let html = `<b style="color:#c084fc">🕵️ Captured ${calls.length} calls (${unique.length} unique endpoints):</b><br><br>`;
+    if (spinRelated.length > 0) {
+      html += `<b style="color:#fbbf24">⭐ Spin/Wheel/Reward related (${spinRelated.length}):</b><br>`;
+      spinRelated.forEach(c => {
+        html += `<code style="color:#86efac">${c.ep}</code><br>`;
+      });
+      html += '<br>';
+    }
+    html += `<b style="color:#93c5fd">All captured (${unique.length}):</b><br>`;
+    html += `<pre class="result-pre" style="max-height:140px">${unique.map(c => c.ep).join('\n')}</pre>`;
+    showResult(html, 'result-info');
+  } catch (e) {
+    showResult('❌ ' + e.message, 'result-err');
+  }
+});
+
 // ─── TRY RECEIVELOTTERY ───────────────────────────────────────────────────────
 $('btnReceiveLottery').addEventListener('click', async () => {
   $('btnReceiveLottery').disabled = true;
