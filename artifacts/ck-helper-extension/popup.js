@@ -191,9 +191,12 @@ $('btnAddSpin').addEventListener('click', async () => {
   $('btnAddSpin').textContent = '⏳ Scanning…';
   showResult('Scanning add-spin endpoints… (this may take a few seconds)', 'result-info');
 
-  // Expanded list — covers more naming variants used by CKLottery forks
+  // ⭐ Confirmed real endpoints from JS scan — try these first
   const ADD_ENDPOINTS = [
-    // InvitedWheel-specific (most likely)
+    'ReceiveLottery',   // found in page JS — may grant a spin/draw
+    'RedeemGift',       // found in page JS — may redeem gift code for spin
+    'RewardAmountDialog', // found in page JS — may trigger reward
+    // InvitedWheel-specific
     'AddInvitedWheelCount','AddInvitedWheelTimes','AddInvitedWheelNum',
     'GiveInvitedWheelSpin','GiveInvitedWheelCount','GiveInvitedWheelTimes',
     'InvitedWheelAdd','InvitedWheelAddCount','InvitedWheelAddTimes',
@@ -331,6 +334,67 @@ $('btnGetInfo').addEventListener('click', async () => {
   } finally {
     $('btnGetInfo').disabled = false;
     $('btnGetInfo').textContent = '📊 Get Wheel Info';
+  }
+});
+
+// ─── TRY RECEIVELOTTERY ───────────────────────────────────────────────────────
+$('btnReceiveLottery').addEventListener('click', async () => {
+  $('btnReceiveLottery').disabled = true;
+  $('btnReceiveLottery').textContent = '⏳ Trying…';
+  showResult('Calling ReceiveLottery (found in page JS)…', 'result-info');
+  try {
+    const tab = await getCKTab();
+    // Try several payload shapes — the endpoint may need different fields
+    const payloads = [
+      {},
+      { type: 1 },
+      { type: 2 },
+      { lotteryType: 1 },
+      { activityId: 1 },
+      { id: 1 },
+      { drawType: 'InvitedWheel' },
+    ];
+    let lastResult = null;
+    for (const body of payloads) {
+      const result = await callCKApi(tab.id, 'ReceiveLottery', body);
+      if (!result.ok) continue;
+      lastResult = result;
+      const d = result.data;
+      const code = d.code ?? d.Code;
+      const msg = String(d.msg ?? d.message ?? '');
+      const ml = msg.toLowerCase();
+      // If it's "url not exist", no point trying more
+      if (ml.includes('url is not exist') || ml.includes('url not exist') || ml.includes('no route')) {
+        showResult('❌ ReceiveLottery endpoint does not exist on this server.', 'result-err');
+        return;
+      }
+      const ok = code === 0 || code === 200 || code === '0';
+      if (ok) {
+        showResult(
+          '✅ ReceiveLottery success! ' + msg +
+          '<pre class="result-pre">' + JSON.stringify(d, null, 2) + '</pre>',
+          'result-ok'
+        );
+        return;
+      }
+      // Endpoint exists — show the response (may need a specific payload)
+      showResult(
+        '⚠️ ReceiveLottery exists (code=' + code + '): ' + msg +
+        '<pre class="result-pre">' + JSON.stringify(d, null, 2) + '</pre>',
+        'result-err'
+      );
+      return;
+    }
+    if (lastResult) {
+      showResult('⚠️ All payloads tried. Last response:<pre class="result-pre">' + JSON.stringify(lastResult.data, null, 2) + '</pre>', 'result-err');
+    } else {
+      showResult('❌ No response from ReceiveLottery.', 'result-err');
+    }
+  } catch (e) {
+    showResult('❌ ' + e.message, 'result-err');
+  } finally {
+    $('btnReceiveLottery').disabled = false;
+    $('btnReceiveLottery').textContent = '🎁 Try ReceiveLottery';
   }
 });
 
