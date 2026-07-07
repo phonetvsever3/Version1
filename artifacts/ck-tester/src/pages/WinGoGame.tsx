@@ -192,7 +192,8 @@ type BetSel = { type: string; value: string; label: string; color: string } | nu
 type Tab = "history" | "chart" | "myhistory";
 
 // Confirmed from API error: "Parameter 'BetCount' cannot be empty|Parameter 'Issuenumber' cannot be empty"
-const BET_EPS = ["BettingWingo", "WinGoBetting", "Betting", "WinBetting", "BetWingo", "GameBetting"];
+// GameBetting confirmed working. Others fail with "url not exist".
+const BET_EPS = ["GameBetting", "BettingWingo", "WinGoBetting", "Betting", "WinBetting", "BetWingo"];
 const HISTORY_EPS = ["GetNoaverageEmerdList", "GetNoverageEmerdList", "GetHistoryList",
   "GetGameRecord", "GetRecordList", "WinGoRecord", "GetLotteryRecord", "GetGameList"];
 
@@ -271,12 +272,13 @@ export default function WinGoGame() {
             return;
           }
           setResults(list);
+          setHistLoading(false); // success — stop loading
           const parsed = parseWinGoRecord(first);
           if (parsed.period !== "—") setPeriod(parsed.period);
           log(`${ep} OK — ${list.length} records. Keys: ${Object.keys(first).join(",").slice(0, 100)}`);
         })
         .catch(() => tryEp(i + 1))
-        .finally(() => { if (i === HISTORY_EPS.length - 1) setHistLoading(false); });
+        .finally(() => { if (i >= HISTORY_EPS.length - 1) setHistLoading(false); });
     };
     tryEp(0);
   }, [activeType.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -295,10 +297,13 @@ export default function WinGoGame() {
         const p = String(raw.issueNumber ?? raw.issueNum ?? raw.period ?? raw.issue ?? raw.no ?? "");
         if (p) setPeriod(p);
 
-        // Calculate countdown from endTime - serviceTime (milliseconds → seconds)
+        // endTime/serviceTime are datetime strings: "2026-07-07 19:27:00"
+        // Must parse as Date objects — NOT Number() which gives NaN on strings
         let ct = 0;
         if (raw.endTime && raw.serviceTime) {
-          ct = Math.round((Number(raw.endTime) - Number(raw.serviceTime)) / 1000);
+          const end = new Date(String(raw.endTime).replace(" ", "T")).getTime();
+          const svc = new Date(String(raw.serviceTime).replace(" ", "T")).getTime();
+          if (!isNaN(end) && !isNaN(svc)) ct = Math.round((end - svc) / 1000);
         }
         // Fallback: direct countdown fields
         if (ct <= 0) {
@@ -376,11 +381,15 @@ export default function WinGoGame() {
     if (!selectedBet) return;
     setBetLoading(true);
     setBetMsg(null);
-    // API error revealed exact field names: "BetCount cannot be empty | Issuenumber cannot be empty"
+    // GameBetting is the confirmed working endpoint.
+    // Error revealed: "Invalid value for 'Amount' | Invalid value for 'SelectType'"
     const betAmt_ = Number(betAmt) || 10;
     const betPayload = {
       typeId: activeType.id,
-      // Both naming conventions — API will use whichever it knows
+      // GameBetting fields (confirmed from error message)
+      SelectType: selectedBet.value,
+      Amount: betAmt_,
+      // Legacy / alternate field names as fallback
       number: selectedBet.value,
       betKey: selectedBet.value,
       Issuenumber: period,
@@ -389,7 +398,6 @@ export default function WinGoGame() {
       betAmount: betAmt_,
       money: betAmt_,
       multiple: multiplier,
-      multilple: multiplier,
     };
     for (const ep of BET_EPS) {
       try {

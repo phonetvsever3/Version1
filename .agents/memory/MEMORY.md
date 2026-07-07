@@ -1,0 +1,1 @@
+- [CKLottery API field names](cklottery-api.md) — exact response fields for WinGo game endpoints discovered via debug logging
