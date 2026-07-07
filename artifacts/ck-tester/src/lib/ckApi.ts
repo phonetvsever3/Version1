@@ -1,5 +1,3 @@
-const BASE_URL = "https://www.cklottery.club";
-
 let authToken: string | null = null;
 
 export function setToken(token: string) {
@@ -17,27 +15,33 @@ export function clearToken() {
   localStorage.removeItem("ck_token");
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function proxyPost<T>(endpoint: string, body: Record<string, unknown> = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options.headers as Record<string, string> || {}),
   };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
+    headers["x-ck-token"] = `Bearer ${token}`;
+    headers["x-ck-token-header"] = "Bearer";
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
+  const res = await fetch(`/api/proxy/ck/${endpoint}`, {
+    method: "POST",
     headers,
+    body: JSON.stringify(body),
   });
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${text}`);
+  const data = await res.json();
+
+  if (data?.error === "cloudflare_blocked") {
+    throw new Error("Cloudflare is blocking our server. Try again in a moment.");
+  }
+  if (data?.error && !data?.code) {
+    throw new Error(String(data.message || data.error));
   }
 
-  return res.json();
+  return data as T;
 }
 
 export interface WinGoRecord {
@@ -76,6 +80,8 @@ export interface UserInfoResponse {
     money: number;
     userName: string;
     nickName: string;
+    avatar?: string;
+    integral?: number;
   };
 }
 
@@ -86,23 +92,27 @@ export interface BetResponse {
 }
 
 export async function getWinGoList(typeId = 1, pageNo = 1, pageSize = 10): Promise<WinGoListResponse> {
-  return request<WinGoListResponse>("/api/WinGo/GetEmerdList", {
-    method: "POST",
-    body: JSON.stringify({ typeId, language: 0, pagNo: pageNo, pageSize }),
-  });
+  return proxyPost<WinGoListResponse>("GetEmerdList", { typeId, pageNo, pageSize, language: 0 });
 }
 
 export async function getWinGoCurrentIssue(typeId = 1): Promise<WinGoCurrentResponse> {
-  return request<WinGoCurrentResponse>("/api/WinGo/GetCurrentIssue", {
-    method: "POST",
-    body: JSON.stringify({ typeId }),
-  });
+  const endpoints = ["GetCurrentIssue", "GetGameInfo", "GetGameIssue", "GetCurrentPeriod"];
+  let lastErr = "";
+  for (const ep of endpoints) {
+    try {
+      const res = await proxyPost<WinGoCurrentResponse>(ep, { typeId });
+      if (res?.data?.issueNumber || res?.data?.countDown !== undefined) {
+        return res;
+      }
+    } catch (e: any) {
+      lastErr = e?.message || String(e);
+    }
+  }
+  throw new Error(lastErr || "Could not fetch current issue");
 }
 
 export async function getUserInfo(): Promise<UserInfoResponse> {
-  return request<UserInfoResponse>("/api/Member/GetMemberInfo", {
-    method: "GET",
-  });
+  return proxyPost<UserInfoResponse>("GetUserInfo", {});
 }
 
 export async function placeBet(params: {
@@ -113,15 +123,32 @@ export async function placeBet(params: {
   betKey: string;
   multiple: number;
 }): Promise<BetResponse> {
-  return request<BetResponse>("/api/WinGo/Betting", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
+  const betData: Record<string, unknown> = {
+    typeId: params.typeId,
+    issueNumber: params.issueNumber,
+    money: params.betAmount,
+    betAmount: params.betAmount,
+    multiple: params.multiple,
+    betKey: params.betKey,
+    betType: params.betType,
+  };
+  const endpoints = ["BettingWingo", "Betting", "WinGoBetting", "BetWingo"];
+  for (const ep of endpoints) {
+    try {
+      const res = await proxyPost<BetResponse>(ep, betData);
+      if (res?.code === 0 || res?.code === 200 || res?.msg) return res;
+    } catch {}
+  }
+  return proxyPost<BetResponse>("BettingWingo", betData);
 }
 
 export async function getMyBetHistory(typeId = 1, pageNo = 1, pageSize = 10) {
-  return request("/api/WinGo/GetBetRecord", {
-    method: "POST",
-    body: JSON.stringify({ typeId, pagNo: pageNo, pageSize }),
-  });
+  const endpoints = ["BetRecords", "GetBettingRecord", "GetUserBettingHistory", "WingoBetRecord", "MyBetList"];
+  for (const ep of endpoints) {
+    try {
+      const res = await proxyPost<any>(ep, { typeId, pageNo, pageSize });
+      if (res?.data?.list || res?.data?.records || res?.data?.betRecords) return res;
+    } catch {}
+  }
+  return { code: 0, data: { list: [], total: 0 } };
 }
